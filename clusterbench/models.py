@@ -202,6 +202,79 @@ class LevelDelta:
 
 
 @dataclass
+class ProcessRecord:
+    """Per-instance raw process info extracted from a runner's out_dir
+    (FR-17). The orchestrator combines this with the scorer's resolved set +
+    the inference_error signal to produce a TaskOutcome via the taxonomy
+    resolver (Phase 3, FR-19). Kept separate from TaskOutcome so the runner
+    doesn't need to know about scoring."""
+
+    instance_id: str
+    return_status: int | None
+    wall_time_s: float
+    timed_out: bool
+    log_tail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ProcessRecord":
+        return cls(**d)
+
+
+@dataclass
+class PredRecord:
+    """One entry from mini-swe-agent's preds.json (FR-18). Just enough shape
+    for the scorer to consume; the real preds.json has more fields we don't
+    need."""
+
+    instance_id: str
+    model_patch: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "PredRecord":
+        return cls(**d)
+
+
+@dataclass
+class LevelRunResult:
+    """What a Runner.run(level) returns: raw process records + preds from the
+    out_dir, plus the wall time the level took. The orchestrator feeds preds
+    to the scorer and combines process_records + resolved into TaskOutcomes."""
+
+    level: int
+    process_records: list[ProcessRecord] = field(default_factory=list)
+    preds: list[PredRecord] = field(default_factory=list)
+    duration_s: float = 0.0
+    out_dir: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "level": self.level,
+            "process_records": [r.to_dict() for r in self.process_records],
+            "preds": [p.to_dict() for p in self.preds],
+            "duration_s": self.duration_s,
+            "out_dir": self.out_dir,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "LevelRunResult":
+        return cls(
+            level=d["level"],
+            process_records=[
+                ProcessRecord.from_dict(r) for r in d.get("process_records", [])
+            ],
+            preds=[PredRecord.from_dict(p) for p in d.get("preds", [])],
+            duration_s=d.get("duration_s", 0.0),
+            out_dir=d.get("out_dir", ""),
+        )
+
+
+@dataclass
 class TaskOutcome:
     """Per-attempt record (FR-17/FR-19). One outcome bucket per attempt."""
 

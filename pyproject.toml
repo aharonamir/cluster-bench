@@ -33,3 +33,6 @@ packages = ["clusterbench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (real SWE-bench / mini-swe-agent paths; deselect with -m 'not slow')",
+]
