@@ -41,10 +41,25 @@ PER_REQUEST_HOLD_S = 0.05  # gives concurrency tests room to observe in_flight >
 class _State:
     """Mutable counters. Each /v1/chat/completions advances these by a fixed
     amount; each scrape reads them as-is. asyncio.Lock guards multi-field
-    updates so concurrent requests can't tear the state mid-write."""
+    updates so concurrent requests can't tear the state mid-write.
 
-    def __init__(self, *, streaming: bool) -> None:
+    Saturation simulation (used by Orchestrator tests): when in_flight strictly
+    exceeds saturation_threshold, each request adds saturation_extra_delay_s
+    to its hold + latency observations, so histogram bucket-edge percentiles
+    jump to the next bucket. Defaults to None (no saturation) so existing
+    tests are unaffected.
+    """
+
+    def __init__(
+        self,
+        *,
+        streaming: bool,
+        saturation_threshold: int | None = None,
+        saturation_extra_delay_s: float = 0.5,
+    ) -> None:
         self.streaming = streaming
+        self.saturation_threshold = saturation_threshold
+        self.saturation_extra_delay_s = saturation_extra_delay_s
         self.input_tokens = 0
         self.output_tokens = 0
         self.total_tokens = 0
@@ -61,7 +76,7 @@ class _State:
         async with self._lock:
             self.in_flight += 1
 
-    async def commit_request(self, *, ok: bool) -> None:
+    async def commit_request(self, *, ok: bool, extra_delay_s: float = 0.0) -> None:
         async with self._lock:
             self.in_flight -= 1
             self.input_tokens += INPUT_TOKENS_PER_REQUEST
@@ -71,9 +86,12 @@ class _State:
                 self.requests_200 += 1
             else:
                 self.requests_500 += 1
-            self.llm_api_lat_obs.append(FAKE_LLM_API_LATENCY_S)
+            # Extra delay inflates e2e + LLM-API latency observations so the
+            # histogram bucket-edge percentiles move; overhead is LiteLLM's
+            # own processing time and isn't affected by GPU/queueing.
+            self.llm_api_lat_obs.append(FAKE_LLM_API_LATENCY_S + extra_delay_s)
             self.proc_overhead_obs.append(FAKE_PROC_OVERHEAD_S)
-            self.e2e_lat_obs.append(FAKE_E2E_LATENCY_S)
+            self.e2e_lat_obs.append(FAKE_E2E_LATENCY_S + extra_delay_s)
             if self.streaming:
                 self.ttft_obs.append(FAKE_TTFT_S)
 
@@ -91,11 +109,26 @@ class _State:
             self.e2e_lat_obs.clear()
 
 
-def create_app(*, streaming: bool = True) -> FastAPI:
+def create_app(
+    *,
+    streaming: bool = True,
+    saturation_threshold: int | None = None,
+    saturation_extra_delay_s: float = 0.5,
+) -> FastAPI:
     """Build a fresh mock app with isolated state. Tests should call this so
     they don't share counters; `uvicorn mock_litellm:app` uses the module-level
-    `app` below for manual runs."""
-    state = _State(streaming=streaming)
+    `app` below for manual runs.
+
+    `saturation_threshold` (when set) simulates a serving stack that degrades
+    past a concurrency knee: requests while in_flight > threshold observe
+    extra delay, so latency histograms shift buckets. Used to exercise the
+    Orchestrator's knee detection against a non-trivial curve.
+    """
+    state = _State(
+        streaming=streaming,
+        saturation_threshold=saturation_threshold,
+        saturation_extra_delay_s=saturation_extra_delay_s,
+    )
     app = FastAPI(title="mock-litellm", docs_url=None, redoc_url=None)
     app.state.litellm = state
 
@@ -104,9 +137,18 @@ def create_app(*, streaming: bool = True) -> FastAPI:
         body = await request.json()
         want_stream = bool(body.get("stream", False)) and state.streaming
         await state.begin_request()
+        # Saturation check after begin so in_flight reflects this request too.
+        # Read without lock — int reads are atomic under CPython's GIL and the
+        # approximate value is fine for triggering the simulated knee.
+        extra = 0.0
+        if (
+            state.saturation_threshold is not None
+            and state.in_flight > state.saturation_threshold
+        ):
+            extra = state.saturation_extra_delay_s
         try:
-            await asyncio.sleep(PER_REQUEST_HOLD_S)
-            await state.commit_request(ok=True)
+            await asyncio.sleep(PER_REQUEST_HOLD_S + extra)
+            await state.commit_request(ok=True, extra_delay_s=extra)
         except Exception:
             await state.commit_request(ok=False)
             raise
@@ -196,17 +238,26 @@ def _non_stream_response(body: dict[str, Any]) -> dict[str, Any]:
 def _histogram_lines(
     name: str, observations: list[float], help_text: str
 ) -> list[str]:
-    """Emit a Prometheus histogram with cumulative bucket counts."""
-    counts = [0] * len(LATENCY_BUCKETS_S)
+    """Emit a Prometheus histogram with cumulative bucket counts (per
+    Prometheus convention: `_bucket{le="X"}` is the count of observations
+    with value <= X)."""
+    per_bucket = [0] * len(LATENCY_BUCKETS_S)
     for obs in observations:
         for i, edge in enumerate(LATENCY_BUCKETS_S):
             if obs <= edge:
-                counts[i] += 1
+                per_bucket[i] += 1
                 break
+    # Roll up to cumulative; this is what Prometheus clients expect and what
+    # the parser's percentile_at_bucket_edge assumes.
+    cumulative: list[int] = []
+    running = 0
+    for c in per_bucket:
+        running += c
+        cumulative.append(running)
     total = len(observations)
     total_sum = sum(observations)
     lines = [f"# HELP {name} {help_text}", f"# TYPE {name} histogram"]
-    for edge, count in zip(LATENCY_BUCKETS_S, counts):
+    for edge, count in zip(LATENCY_BUCKETS_S, cumulative):
         lines.append(f'{name}_bucket{{le="{edge}"}} {count}')
     lines.append(f'{name}_bucket{{le="+Inf"}} {total}')
     lines.append(f"{name}_count {total}")

@@ -203,6 +203,43 @@ def test_diff_bucket_edge_percentiles_populated():
     assert delta.ttft_p95 == 0.05
 
 
+def test_diff_percentiles_with_mixed_buckets_via_saturation():
+    """Regression: when observations span multiple buckets (e.g. saturation
+    inflates some latencies past the next edge), the mock MUST emit cumulative
+    `_bucket{le=X}` counts per Prometheus convention — otherwise the parser's
+    cumulative-percentile walk falls through to the last finite edge.
+
+    Setup: 6 CONCURRENT requests against a mock with saturation_threshold=1 —
+    in_flight ramps 1→6, so the first to begin sees 1 (no sat) and the rest
+    see >1 (sat). e2e lat = 0.2 (bucket 0.25) or 0.7 (bucket 1.0). At p50/p99
+    over 6 samples with 5/6 saturated, the answer must be 1.0, not the last
+    finite edge (5.0)."""
+
+    async def go():
+        async with _client(
+            create_app(saturation_threshold=1, saturation_extra_delay_s=0.5)
+        ) as client:
+            src = LiteLLMSource("http://test/metrics", client=client)
+            start = await src.snapshot()
+            await asyncio.gather(
+                *[
+                    client.post(
+                        "/v1/chat/completions",
+                        json={"model": "m", "messages": []},
+                    )
+                    for _ in range(6)
+                ]
+            )
+            end = await src.snapshot()
+            end.level = 1
+            return src.diff(start, end, in_flight_peak=6.0, duration_s=1.0)
+
+    delta = asyncio.run(go())
+    # 5/6 observations are saturated → both p50 and p99 land at the 1.0 edge.
+    assert delta.lat_p50 == 1.0
+    assert delta.lat_p99 == 1.0  # would be 5.0 if mock emitted non-cumulative
+
+
 def test_diff_ttft_none_when_streaming_off():
     """AC-11: ttft_p50/p95 are None when the source never had a TTFT series."""
     delta, _end = _delta_after_n_calls(3, streaming=False)

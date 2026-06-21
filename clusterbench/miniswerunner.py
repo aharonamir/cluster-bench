@@ -194,7 +194,7 @@ def parse_out_dir(out_dir: Path) -> tuple[list[ProcessRecord], list[PredRecord]]
 
     process_records: list[ProcessRecord] = []
     for iid in sorted(instance_ids):
-        _log_path, tail, timed_out, return_status, wall = _scan_instance_logs(
+        _log_path, tail, timed_out, return_status, wall, inference_error = _scan_instance_logs(
             out_dir, iid
         )
         process_records.append(
@@ -204,6 +204,7 @@ def parse_out_dir(out_dir: Path) -> tuple[list[ProcessRecord], list[PredRecord]]
                 wall_time_s=wall,
                 timed_out=timed_out,
                 log_tail=tail,
+                inference_error=inference_error,
             )
         )
 
@@ -218,9 +219,16 @@ def _instance_id_from_path(p: Path) -> str | None:
 
 def _scan_instance_logs(
     out_dir: Path, instance_id: str
-) -> tuple[Path | None, str, bool, int | None, float]:
+) -> tuple[Path | None, str, bool, int | None, float, bool]:
     """Find logs for `instance_id`; surface (log_path, tail, timed_out,
-    return_status, wall_time_s) best-effort."""
+    return_status, wall_time_s, inference_error) best-effort.
+
+    inference_error is per-instance (FR-19): True when the log indicates the
+    agent's LLM call failed at the inference layer (LiteLLM/OpenAI/connection
+    keywords). The level-granular failed-request rate from LiteLLM stays on
+    LevelDelta.error_rate — documented but not auto-promoted here, since
+    level-granularity can't be attributed to a specific instance reliably.
+    """
     candidates: list[Path] = []
     for pattern in (
         f"**/{instance_id}*.traj",
@@ -233,7 +241,7 @@ def _scan_instance_logs(
         set(candidates), key=lambda p: (p.suffix != ".traj", str(p))
     )
     if not candidates:
-        return None, "", False, None, 0.0
+        return None, "", False, None, 0.0, False
 
     log_path = candidates[0]
     try:
@@ -246,6 +254,29 @@ def _scan_instance_logs(
     timed_out = any(
         kw in low
         for kw in ("step limit reached", "timed out", "timeout", "hit step limit")
+    )
+
+    # Per-instance inference_error (FR-19). Match common LiteLLM/OpenAI
+    # transport-error patterns; the level-granular LiteLLM counter is a
+    # separate signal on LevelDelta.error_rate.
+    inference_error = any(
+        kw in low
+        for kw in (
+            "inference_error",
+            "litellm.error",
+            "litellm_timeout",
+            "openai.error",
+            "apiconnectionerror",
+            "ratelimiterror",
+            "service_unavailable",
+            "bad gateway",
+            "connection reset",
+            "connection refused",
+            "connection aborted",
+            "connection error",
+            "read timeout",
+            "remote disconnected",
+        )
     )
 
     return_status: int | None = None
@@ -273,7 +304,7 @@ def _scan_instance_logs(
             if wall_time_s > 0:
                 break
 
-    return log_path, tail, timed_out, return_status, wall_time_s
+    return log_path, tail, timed_out, return_status, wall_time_s, inference_error
 
 
 # ---------------------------------------------------------------------------

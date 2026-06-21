@@ -214,6 +214,7 @@ class ProcessRecord:
     wall_time_s: float
     timed_out: bool
     log_tail: str = ""
+    inference_error: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -314,10 +315,15 @@ class TaskOutcome:
 
 @dataclass
 class LevelSummary:
-    """Aggregated view of one level (FR-20): delta + scorer + outcome taxonomy."""
+    """Aggregated view of one level (FR-20): delta + scorer + outcome taxonomy.
+
+    delta is None when wire metrics were unavailable for this level (AC-3) —
+    process-level fields (n_tasks, pass_rate, outcome_counts, duration_s)
+    are still populated.
+    """
 
     level: int
-    delta: LevelDelta
+    delta: LevelDelta | None
     n_tasks: int
     pass_rate: float
     outcome_counts: dict[str, int] = field(default_factory=dict)
@@ -326,7 +332,7 @@ class LevelSummary:
     def to_dict(self) -> dict[str, Any]:
         return {
             "level": self.level,
-            "delta": self.delta.to_dict(),
+            "delta": self.delta.to_dict() if self.delta is not None else None,
             "n_tasks": self.n_tasks,
             "pass_rate": self.pass_rate,
             "outcome_counts": dict(self.outcome_counts),
@@ -335,9 +341,10 @@ class LevelSummary:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "LevelSummary":
+        raw_delta = d.get("delta")
         return cls(
             level=d["level"],
-            delta=LevelDelta.from_dict(d["delta"]),
+            delta=LevelDelta.from_dict(raw_delta) if raw_delta is not None else None,
             n_tasks=d["n_tasks"],
             pass_rate=d["pass_rate"],
             outcome_counts=dict(d.get("outcome_counts", {})),
