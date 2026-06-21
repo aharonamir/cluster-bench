@@ -134,7 +134,7 @@ two retrievable reports; mid-run connect renders completed levels.
 
 ---
 
-## Phase 5 — Dashboard (headline graphs + LiteLLM saturation panel + overlay)
+## Phase 5 — Dashboard (headline graphs + LiteLLM saturation panel + overlay)  ✅ done
 
 - **T050** `index.html` + `static/app.js`: WS client; SVG: **agents-vs-TTFT**,
   **agents-vs-latency** (headline), saturation curve w/ peak + knee.

@@ -1,0 +1,286 @@
+/* ClusterBench dashboard — minimal, no framework, no build step. */
+
+:root {
+  --bg: #fafafa;
+  --panel-bg: #ffffff;
+  --border: #d8d8d8;
+  --text: #1a1a1a;
+  --muted: #666;
+  --accent: #2563eb;
+  --accent-2: #dc2626;
+  --accent-3: #059669;
+  --warning: #d97706;
+  --series-1: #2563eb;
+  --series-2: #dc2626;
+  --series-3: #059669;
+  --series-4: #7c3aed;
+  --series-5: #d97706;
+  --series-6: #0891b2;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.25rem;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+
+main, body > section {
+  padding: 1rem 1.25rem;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+body > section { padding-top: 0; }
+body > section:first-of-type { padding-top: 1rem; }
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.panel.hidden { display: none; }
+
+.hint, .muted { color: var(--muted); font-size: 0.85rem; font-weight: 400; }
+
+/* ----------------------------------------------------------------- */
+/* Connection indicator                                              */
+/* ----------------------------------------------------------------- */
+
+.indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.indicator .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #ccc;
+}
+
+.indicator.connected .dot { background: var(--accent-3); }
+.indicator.disconnected .dot { background: var(--accent-2); }
+.indicator.connecting .dot { background: var(--warning); }
+
+/* ----------------------------------------------------------------- */
+/* Forms                                                             */
+/* ----------------------------------------------------------------- */
+
+form .grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  color: var(--muted);
+  gap: 0.2rem;
+}
+
+label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+input, select {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text);
+}
+
+input[type="checkbox"] { width: auto; }
+
+fieldset.guards {
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 0.5rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem;
+}
+
+fieldset.guards legend { font-size: 0.8rem; color: var(--muted); padding: 0 0.4rem; }
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: #1d4ed8; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button[type="button"] { background: #fff; color: var(--accent); }
+button[type="button"]:hover:not(:disabled) { background: #eff6ff; }
+
+/* ----------------------------------------------------------------- */
+/* Graphs                                                            */
+/* ----------------------------------------------------------------- */
+
+.graphs-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 1rem;
+}
+
+.chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.annotation { padding: 0.5rem 0.25rem 0; font-size: 0.85rem; }
+
+/* ----------------------------------------------------------------- */
+/* Per-level table                                                   */
+/* ----------------------------------------------------------------- */
+
+.table-scroll { overflow-x: auto; }
+
+table {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  width: 100%;
+}
+
+th, td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+
+th { background: #f4f4f4; font-weight: 600; }
+th[rowspan], th[colspan] { text-align: center; }
+tbody tr:hover { background: #fafafa; }
+
+td.ttft-na { color: var(--muted); font-style: italic; }
+td.knee { background: #fef3c7; font-weight: 600; }
+
+/* ----------------------------------------------------------------- */
+/* Saved reports / overlay                                           */
+/* ----------------------------------------------------------------- */
+
+.saved-controls {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+#saved-select {
+  flex: 1;
+  min-width: 200px;
+  max-width: 400px;
+  padding: 0.25rem;
+}
+
+.saved-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+#overlay-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+#overlay-legend .legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+#overlay-legend .legend-swatch {
+  width: 14px; height: 3px;
+  background: var(--series-1);
+}
+
+/* ----------------------------------------------------------------- */
+/* Event feed                                                        */
+/* ----------------------------------------------------------------- */
+
+.event-feed {
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+.event-feed .event {
+  padding: 0.15rem 0;
+  border-bottom: 1px dotted #eee;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.event-feed .event:last-child { border-bottom: none; }
+.event-feed .event .t { color: var(--muted); }
+.event-feed .event .type { color: var(--accent); font-weight: 600; min-width: 8rem; }
+.event-feed .event .payload { color: var(--text); }
+
+footer {
+  padding: 1rem 1.25rem;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  background: var(--panel-bg);
+}

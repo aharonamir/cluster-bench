@@ -34,5 +34,5 @@ SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt uv sync
 (`--native-tls` alone is not enough — the existing env var shadows it.)
 
 ## Current status
-Phases 0–4 done. Phase 5 (dashboard) next.
+Phases 0–5 done. Phase 6 (Dockerfile + docs) next.
 

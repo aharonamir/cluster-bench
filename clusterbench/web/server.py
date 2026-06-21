@@ -20,6 +20,7 @@ from typing import Any, Callable, Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from clusterbench.metrics.base import MetricsSource
@@ -198,6 +199,11 @@ class _ServerState:
 # ---------------------------------------------------------------------------
 
 
+def _static_dir() -> Path:
+    """Static assets directory, next to this file."""
+    return Path(__file__).parent / "static"
+
+
 def create_app(
     *,
     results_dir: Path | str = "results",
@@ -205,9 +211,14 @@ def create_app(
     source_factory: SourceFactory | None = None,
     hub: WebSocketHub | None = None,
     index_html: str | None = None,
+    serve_static: bool = True,
 ) -> FastAPI:
     """Build a FastAPI app. Defaults wire the mock path; tests pass their own
-    factories + hub to skip HTTP plumbing."""
+    factories + hub to skip HTTP plumbing.
+
+    `index_html` overrides the served `/` payload (tests use this for an
+    in-line page). `serve_static=False` skips the /static mount.
+    """
     if runner_factory is None:
         runner_factory = default_runner_factory(
             base_url="http://localhost:4000/v1",
@@ -228,8 +239,25 @@ def create_app(
     app = FastAPI(title="clusterbench")
     app.state.clusterbench = state
 
-    _register_routes(app, state, index_html=index_html or _DEFAULT_INDEX_HTML)
+    static_dir = _static_dir()
+    if serve_static and static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    _register_routes(
+        app,
+        state,
+        index_html=index_html or _resolve_index_html(static_dir),
+    )
     return app
+
+
+def _resolve_index_html(static_dir: Path) -> str:
+    """Read the dashboard HTML from disk if it exists; fall back to the
+    placeholder so the server is usable before Phase 5 ships app.js."""
+    index_path = static_dir / "index.html"
+    if index_path.is_file():
+        return index_path.read_text()
+    return _DEFAULT_INDEX_HTML
 
 
 # ---------------------------------------------------------------------------
