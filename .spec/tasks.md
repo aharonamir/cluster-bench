@@ -117,7 +117,7 @@ wire-metrics-unavailable, process+score still present; each taxonomy branch hit.
 
 ---
 
-## Phase 4 — Web server, live telemetry, persistence
+## Phase 4 — Web server, live telemetry, persistence  ✅ done
 
 - **T040** `web/server.py`: `POST /api/run` (409 if active), `GET /api/runs`,
   `GET /api/runs/{id}`, `GET /`, static; build RunConfig from body.
