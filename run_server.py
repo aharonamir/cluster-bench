@@ -1,5 +1,10 @@
 """uvicorn entrypoint for the ClusterBench server.
 
+Configuration comes from a YAML file (`--config config.yaml`), with individual
+CLI flags overriding file values for ad-hoc runs. Precedence:
+
+    dataclass defaults  <  YAML file  <  CLI flags
+
 Two paths:
 
   mock path (default)
@@ -7,16 +12,17 @@ Two paths:
       downloads — what CI and the dev loop use.
 
       uv run python run_server.py
+      uv run python run_server.py --config config.yaml
 
-  real path (--real)
+  real path (real: true, or --real)
       Drives mini-swe-agent's `mini-extra swebench` subprocess per level,
-      pointing the agents' OpenAI client at a real LiteLLM at --base-url.
+      pointing the agents' OpenAI client at a real LiteLLM at base_url.
       Requires the `real` extra (`uv sync --extra real`) and Docker (the
       per-task containers mini-swe-agent spawns need the daemon).
 
-      uv run python run_server.py --real --base-url http://litellm:4000/v1
+      uv run python run_server.py --config config.yaml
 
-Both paths scrape the same /metrics endpoint (--metrics-url) for wire-level
+Both paths scrape the same /metrics endpoint (metrics_url) for wire-level
 deltas; only the runner differs.
 """
 from __future__ import annotations
@@ -26,11 +32,8 @@ from pathlib import Path
 
 import uvicorn
 
-from clusterbench.web.server import (
-    create_app,
-    default_runner_factory,
-    default_source_factory,
-)
+from clusterbench.config import ServerConfig
+from clusterbench.web.server import create_app, default_runner_factory
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,40 +41,49 @@ def parse_args() -> argparse.Namespace:
         description="Run the ClusterBench server (mock path by default)."
     )
     p.add_argument(
-        "--host", default="127.0.0.1", help="Bind host (default 127.0.0.1)."
+        "--config",
+        default=None,
+        help="Path to a YAML config file (see config.example.yaml).",
     )
-    p.add_argument(
-        "--port", type=int, default=8000, help="Bind port (default 8000)."
-    )
+    # All flags default to None so we can tell 'unset' from an explicit value
+    # and only override the file when the operator actually passed one.
+    p.add_argument("--host", default=None, help="Bind host (default 127.0.0.1).")
+    p.add_argument("--port", type=int, default=None, help="Bind port (default 8000).")
     p.add_argument(
         "--results-dir",
-        default="results",
+        default=None,
         help="Where to persist RunReport JSON files (default ./results).",
     )
     p.add_argument(
         "--base-url",
-        default="http://localhost:4000/v1",
+        default=None,
         help="OpenAI-style base URL (mock_litellm by default; LiteLLM on real path).",
     )
     p.add_argument(
         "--metrics-url",
-        default="http://localhost:4000/metrics",
+        default=None,
         help="LiteLLM /metrics endpoint to scrape.",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        help="API key mini-swe-agent passes to LiteLLM (default sk-mock).",
+    )
+    p.add_argument(
+        "--model",
+        default=None,
+        help="Default model name (a POST /api/run body may override per run).",
     )
     p.add_argument(
         "--real",
         action="store_true",
+        default=None,
         help="Wire the real MiniSweRunner (requires --extra real + Docker).",
-    )
-    p.add_argument(
-        "--api-key",
-        default="sk-mock",
-        help="API key mini-swe-agent passes to LiteLLM (default sk-mock).",
     )
     p.add_argument(
         "--step-limit",
         type=int,
-        default=0,
+        default=None,
         help="Per-task step limit for mini-swe-agent (0 = unlimited).",
     )
     p.add_argument(
@@ -81,10 +93,30 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--log-level",
-        default="info",
+        default=None,
         choices=["critical", "error", "warning", "info", "debug"],
     )
     return p.parse_args()
+
+
+def resolve_config(args: argparse.Namespace) -> ServerConfig:
+    """Build the effective ServerConfig: file (if any) overlaid with CLI flags."""
+    cfg = ServerConfig.load(args.config) if args.config else ServerConfig()
+    # argparse uses dashes; ServerConfig uses underscores.
+    overrides = {
+        "host": args.host,
+        "port": args.port,
+        "log_level": args.log_level,
+        "results_dir": args.results_dir,
+        "runner_root": args.runner_root,
+        "base_url": args.base_url,
+        "metrics_url": args.metrics_url,
+        "api_key": args.api_key,
+        "model": args.model,
+        "real": args.real,  # None unless --real was passed (store_true default None)
+        "step_limit": args.step_limit,
+    }
+    return cfg.merge_overrides(overrides)
 
 
 def _real_runner_factory(
@@ -114,33 +146,32 @@ def _real_runner_factory(
     return make
 
 
-def build_app(args: argparse.Namespace):
-    """Build the FastAPI app from CLI args. Hook for run_server.py + tests."""
-    results_dir = Path(args.results_dir)
-    runner_root = Path(args.runner_root) if args.runner_root else results_dir / "miniswe"
+def build_app(cfg: ServerConfig):
+    """Build the FastAPI app from a resolved ServerConfig. Hook for tests."""
+    results_dir = Path(cfg.results_dir)
+    runner_root = Path(cfg.runner_root) if cfg.runner_root else results_dir / "miniswe"
 
-    if args.real:
+    if cfg.real:
         runner_factory = _real_runner_factory(
-            base_url=args.base_url,
-            api_key=args.api_key,
-            step_limit=args.step_limit,
+            base_url=cfg.base_url,
+            api_key=cfg.api_key,
+            step_limit=cfg.step_limit,
             runner_root=runner_root,
         )
     else:
         runner_factory = default_runner_factory(
-            base_url=args.base_url,
+            base_url=cfg.base_url,
             runner_root=runner_root,
         )
 
-    # Source factory always honors --metrics-url: it's the server-level wire
+    # Source factory always honors cfg.metrics_url: it's the server-level wire
     # endpoint (the only reachable layer). The API body doesn't expose a
-    # per-run metrics URL, so config.litellm_metrics_url is always its dataclass
-    # default — the CLI flag is what the operator actually pointed at.
+    # per-run metrics URL.
     def source_factory(*, config):
         from clusterbench.metrics.litellm import LiteLLMSource
 
         return LiteLLMSource(
-            metrics_url=args.metrics_url,
+            metrics_url=cfg.metrics_url,
             scrape_interval_s=config.scrape_interval_s,
         )
 
@@ -148,13 +179,20 @@ def build_app(args: argparse.Namespace):
         results_dir=results_dir,
         runner_factory=runner_factory,
         source_factory=source_factory,
+        run_defaults={
+            "model": cfg.model,
+            "streaming": cfg.streaming,
+            "scrape_interval_s": cfg.scrape_interval_s,
+            "step_limit": cfg.step_limit,
+        },
     )
 
 
 def main() -> None:
     args = parse_args()
-    app = build_app(args)
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    cfg = resolve_config(args)
+    app = build_app(cfg)
+    uvicorn.run(app, host=cfg.host, port=cfg.port, log_level=cfg.log_level)
 
 
 if __name__ == "__main__":

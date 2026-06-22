@@ -174,6 +174,13 @@ uv run python run_server.py --real \
     --api-key     "$LITELLM_KEY"
 ```
 
+Or, preferably, put it all in a `config.yaml` (`cp config.example.yaml
+config.yaml`) and launch with `uv run python run_server.py --config config.yaml`.
+Precedence is **defaults < config.yaml < CLI flags**. `base_url`, `api_key`,
+`metrics_url`, and `real` are server-level; `model` (and `streaming`,
+`scrape_interval_s`, `step_limit`) are defaults a `POST /api/run` body may
+override per run. See `config.example.yaml` for every key.
+
 ### Configuring LiteLLM so `/metrics` exists
 
 ClusterBench's only wire source is LiteLLM's Prometheus endpoint. Enable it in

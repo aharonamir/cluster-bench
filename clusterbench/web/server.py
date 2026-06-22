@@ -49,7 +49,13 @@ class TaskSliceBody(BaseModel):
 
 
 class StartRunBody(BaseModel):
-    """POST /api/run body. run_id is server-generated when omitted."""
+    """POST /api/run body. run_id is server-generated when omitted.
+
+    `model`, `streaming`, `scrape_interval_s`, and `step_limit` default to None
+    here: when omitted, the server fills them from its launch config's
+    run-defaults (so the model is set once at startup, not per request). An
+    explicit value in the body always wins.
+    """
 
     name: str = ""
     mode: Literal["sweep", "soak"] = "sweep"
@@ -58,10 +64,11 @@ class StartRunBody(BaseModel):
     task_slice: TaskSliceBody = Field(default_factory=TaskSliceBody)
     # Guards are intentionally loose in pydantic — RunConfig tolerates all-None.
     guards: dict[str, float | None] = Field(default_factory=dict)
-    scrape_interval_s: float = 1.0
-    model: str = "gpt-4o-mini"
-    streaming: bool = True
-    step_limit: int = 0
+    # None → fall back to the server's run-defaults (see _build_run_config).
+    scrape_interval_s: float | None = None
+    model: str | None = None
+    streaming: bool | None = None
+    step_limit: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +132,14 @@ class _ServerState:
         runner_factory: RunnerFactory,
         source_factory: SourceFactory,
         hub: WebSocketHub,
+        run_defaults: dict[str, Any] | None = None,
     ) -> None:
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.runner_factory = runner_factory
         self.source_factory = source_factory
         self.hub = hub
+        self.run_defaults = run_defaults or {}
         self._lock = asyncio.Lock()
         self._active_run_id: str | None = None
         self._active_task: asyncio.Task[RunReport] | None = None
@@ -212,12 +221,18 @@ def create_app(
     hub: WebSocketHub | None = None,
     index_html: str | None = None,
     serve_static: bool = True,
+    run_defaults: dict[str, Any] | None = None,
 ) -> FastAPI:
     """Build a FastAPI app. Defaults wire the mock path; tests pass their own
     factories + hub to skip HTTP plumbing.
 
     `index_html` overrides the served `/` payload (tests use this for an
     in-line page). `serve_static=False` skips the /static mount.
+
+    `run_defaults` supplies server-level defaults (model, streaming,
+    scrape_interval_s, step_limit) used to fill any field a `POST /api/run`
+    body leaves unset — so an operator configures the model once in the server
+    config instead of repeating it in every run request.
     """
     if runner_factory is None:
         runner_factory = default_runner_factory(
@@ -234,6 +249,7 @@ def create_app(
         runner_factory=runner_factory,
         source_factory=source_factory,
         hub=hub,
+        run_defaults=run_defaults or {},
     )
 
     app = FastAPI(title="clusterbench")
@@ -279,7 +295,7 @@ def _register_routes(
     @app.post("/api/run")
     async def start_run(body: StartRunBody) -> JSONResponse:
         run_id = uuid.uuid4().hex[:12]
-        config = _build_run_config(run_id, body)
+        config = _build_run_config(run_id, body, state.run_defaults)
         pinned = _resolve_pinned(config)
         await state.try_start(config, pinned=pinned)
         return JSONResponse(
@@ -342,12 +358,24 @@ def _register_routes(
 # ---------------------------------------------------------------------------
 
 
-def _build_run_config(run_id: str, body: StartRunBody) -> RunConfig:
+def _build_run_config(
+    run_id: str, body: StartRunBody, defaults: dict[str, Any] | None = None
+) -> RunConfig:
     from clusterbench.models import (
         DegradationGuard,
         LoadMode,
         MiniSweConfig,
     )
+
+    d = defaults or {}
+
+    def pick(value: Any, key: str, hardcoded: Any) -> Any:
+        # body value (if the client set it) > server run-default > hardcoded.
+        if value is not None:
+            return value
+        if key in d and d[key] is not None:
+            return d[key]
+        return hardcoded
 
     return RunConfig(
         run_id=run_id,
@@ -362,11 +390,11 @@ def _build_run_config(run_id: str, body: StartRunBody) -> RunConfig:
             pinned_instance_ids=list(body.task_slice.pinned_instance_ids),
         ),
         guards=DegradationGuard(**{k: v for k, v in body.guards.items()}),
-        scrape_interval_s=body.scrape_interval_s,
+        scrape_interval_s=pick(body.scrape_interval_s, "scrape_interval_s", 1.0),
         miniswe=MiniSweConfig(
-            model=body.model,
-            streaming=body.streaming,
-            step_limit=body.step_limit,
+            model=pick(body.model, "model", "gpt-4o-mini"),
+            streaming=pick(body.streaming, "streaming", True),
+            step_limit=pick(body.step_limit, "step_limit", 0),
         ),
     )
 

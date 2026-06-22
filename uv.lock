@@ -415,6 +415,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "pyyaml" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -436,6 +437,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.137.2" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "mini-swe-agent", marker = "extra == 'real'", specifier = "==2.4.1" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "swebench", marker = "extra == 'real'", specifier = "==4.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.49.0" },
 ]

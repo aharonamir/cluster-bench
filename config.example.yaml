@@ -1,0 +1,45 @@
+# ClusterBench server configuration.
+#
+# Copy to config.yaml and edit, then launch with:
+#     uv run python run_server.py --config config.yaml
+#
+# Precedence (lowest -> highest): built-in defaults < this file < CLI flags.
+# Every key is optional; omitted keys fall back to the defaults shown below.
+
+# --- HTTP bind --------------------------------------------------------------
+host: 127.0.0.1            # use 0.0.0.0 to accept connections from other hosts
+port: 8000
+log_level: info           # critical | error | warning | info | debug
+
+# --- Paths ------------------------------------------------------------------
+results_dir: results      # where RunReport JSON files are persisted
+# runner_root: results/miniswe   # per-level out_dir root (default <results_dir>/miniswe)
+
+# --- Model endpoint (the part you asked about) ------------------------------
+# base_url:   where the agent's LLM calls go (your LiteLLM proxy, or mock_litellm).
+# api_key:    the key the agent passes to LiteLLM (OPENAI_API_KEY on the real path).
+# metrics_url: the LiteLLM /metrics endpoint ClusterBench scrapes for wire deltas.
+base_url:    http://localhost:4000/v1
+api_key:     sk-mock
+metrics_url: http://localhost:4000/metrics
+
+# --- Path selector ----------------------------------------------------------
+# false -> in-process mock runner (no GPU/Docker/downloads).
+# true  -> real mini-swe-agent subprocess (needs `uv sync --extra real` + Docker).
+real: false
+
+# --- Per-run defaults -------------------------------------------------------
+# These set the defaults a POST /api/run body inherits when it omits them.
+# An explicit value in the request body always wins.
+model: gpt-4o-mini        # must be a route your LiteLLM model_list knows
+streaming: true           # needed for TTFT to exist
+scrape_interval_s: 1.0    # metrics scrape cadence; tighten to catch fast peaks
+step_limit: 0             # per-task agent step cap (0 = unlimited)
+
+# --- Example: a real cluster ------------------------------------------------
+# host: 0.0.0.0
+# base_url:    http://litellm.internal:4000/v1
+# api_key:     sk-prod-xxxxxxxx
+# metrics_url: http://litellm.internal:4000/metrics
+# real: true
+# model: qwen2.5-coder-32b-instruct

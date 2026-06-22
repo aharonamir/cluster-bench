@@ -60,6 +60,52 @@ uv sync                       # mock-path deps
 
 ---
 
+## 1b. Configuration (`config.yaml`)
+
+Rather than passing flags every time, put everything in a YAML file and launch
+with `--config`. Copy the shipped example and edit it:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+```yaml
+# config.yaml
+host: 127.0.0.1
+port: 8000
+
+# The model endpoint — this is where base-url / api-key / model live:
+base_url:    http://localhost:4000/v1       # where the agent's LLM calls go
+api_key:     sk-mock                         # key passed to LiteLLM
+metrics_url: http://localhost:4000/metrics   # what ClusterBench scrapes
+
+real: false                  # true → real mini-swe-agent (needs --extra real + Docker)
+model: gpt-4o-mini           # default model (a POST /api/run body may override per run)
+streaming: true
+scrape_interval_s: 1.0
+results_dir: results
+```
+
+```bash
+uv run python run_server.py --config config.yaml
+```
+
+**Precedence:** built-in defaults **<** `config.yaml` **<** CLI flags. So you can
+keep a stable `config.yaml` and still override one field ad-hoc, e.g.
+`--config config.yaml --port 9001`.
+
+**Server-level vs per-run.** `base_url`, `api_key`, `metrics_url`, and `real` are
+fixed for the server's lifetime. `model`, `streaming`, `scrape_interval_s`, and
+`step_limit` are *defaults* — a `POST /api/run` body may override them per run
+(e.g. to compare two models against the same proxy). The `model` name must be a
+route your LiteLLM `model_list` knows.
+
+> The rest of this guide uses explicit flags so each step is self-contained, but
+> anywhere you see `--base-url`/`--metrics-url`/`--api-key`/`--model`, you can put
+> the value in `config.yaml` instead.
+
+---
+
 ## 2. Mock path — full operating flow
 
 ### Step 1 — start the fake LiteLLM proxy
