@@ -100,9 +100,9 @@ fixed for the server's lifetime. `model`, `streaming`, `scrape_interval_s`, and
 (e.g. to compare two models against the same proxy). The `model` name must be a
 route your LiteLLM `model_list` knows.
 
-> The rest of this guide uses explicit flags so each step is self-contained, but
-> anywhere you see `--base-url`/`--metrics-url`/`--api-key`/`--model`, you can put
-> the value in `config.yaml` instead.
+> Step 2 below shows both launch styles (config file vs flags) side by side.
+> Anywhere later in this guide you see `--base-url`/`--metrics-url`/`--api-key`/
+> `--model`, you can put the value in `config.yaml` instead.
 
 ---
 
@@ -126,6 +126,21 @@ curl -s http://localhost:4000/metrics | head
 
 ### Step 2 — start the ClusterBench server
 
+There are **two equivalent ways** to configure the server — **pick one**, don't
+run both. They set the same things; the only difference is *where the values
+come from*.
+
+**Option A — config file (recommended).** All settings live in `config.yaml`
+(see §1b); the command stays short:
+
+```bash
+# Terminal B
+uv run python run_server.py --config config.yaml
+```
+
+**Option B — inline CLI flags.** Pass the settings directly; anything omitted
+falls back to built-in defaults. Useful for quick one-offs:
+
 ```bash
 # Terminal B
 uv run python run_server.py --port 8000 \
@@ -133,8 +148,18 @@ uv run python run_server.py --port 8000 \
     --metrics-url http://localhost:4000/metrics
 ```
 
-> ⚠️ **`--metrics-url` is authoritative.** The server scrapes exactly this URL.
-> If it doesn't point at a live `/metrics`, every level reports
+> **A and B are the same operation.** Option A reads `base-url` / `metrics-url` /
+> `port` / … from the file; Option B takes them on the command line. You can also
+> **combine** them — flags override the file — e.g.
+> `--config config.yaml --port 9001` loads everything from `config.yaml` but runs
+> on port 9001. Precedence: built-in defaults **<** `config.yaml` **<** CLI flags.
+
+The rest of this guide uses Option B (explicit flags) so each step is
+self-contained, but every flag shown has a `config.yaml` equivalent.
+
+> ⚠️ **The metrics URL is authoritative.** Whether set via `--metrics-url` or
+> `metrics_url:` in the config, the server scrapes exactly that URL. If it
+> doesn't point at a live `/metrics`, every level reports
 > `wire_metrics_available: false` and empty deltas — the run still completes, but
 > with no wire numbers. This is the single most common misconfiguration.
 
