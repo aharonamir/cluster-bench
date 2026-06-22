@@ -59,10 +59,15 @@ const state = {
   wsState: "disconnected",
   // Server wiring + run defaults from /api/config (model, endpoints, path).
   serverConfig: null,
+  // True while a run is active (run_start received, run_done not yet).
+  runInProgress: false,
+  // ISO timestamp of when the active run started (for elapsed timer).
+  runStartedAt: null,
 };
 
 let _ws = null;
 let _wsReconnectTimer = null;
+let _elapsedTimer = null;
 
 // ---------------------------------------------------------------------
 // Transport: WebSocket
@@ -126,7 +131,11 @@ function onEvent(type, payload) {
   switch (type) {
     case "run_start":
       state.activeRun = newRunFromStart(payload);
+      state.runInProgress = true;
+      state.runStartedAt = Date.now();
       showActiveRun();
+      setRunInProgress(true);
+      startElapsedTimer();
       break;
     case "run_done":
       // Pin the finished-at + knee; the persisted report (fetched later) is
@@ -135,6 +144,9 @@ function onEvent(type, payload) {
       if (state.activeRun) {
         state.activeRun.finished_at = new Date().toISOString();
       }
+      state.runInProgress = false;
+      setRunInProgress(false);
+      stopElapsedTimer();
       // After a run finishes, refresh the saved-reports list so it appears.
       refreshSavedList();
       break;
@@ -414,6 +426,64 @@ function buildStartBody() {
   return body;
 }
 
+// ---------------------------------------------------------------------
+// Run in-progress state — button + badge
+// ---------------------------------------------------------------------
+
+function setRunInProgress(running) {
+  const btn = document.getElementById("start-btn");
+  const stopBtn = document.getElementById("stop-btn");
+  const badge = document.getElementById("run-status-badge");
+  if (btn) {
+    btn.disabled = running;
+    btn.textContent = running ? "Running…" : "Start run";
+  }
+  if (stopBtn) {
+    stopBtn.classList.toggle("hidden", !running);
+  }
+  if (badge) {
+    if (running) {
+      badge.className = "run-badge running";
+      const dot = document.createElement("span");
+      dot.className = "badge-dot";
+      badge.innerHTML = "";
+      badge.appendChild(dot);
+      badge.appendChild(document.createTextNode("running"));
+    } else {
+      badge.className = "run-badge hidden";
+    }
+  }
+}
+
+async function stopRun() {
+  const stopBtn = document.getElementById("stop-btn");
+  if (stopBtn) { stopBtn.disabled = true; stopBtn.textContent = "Stopping…"; }
+  try {
+    await fetch("/api/run", { method: "DELETE" });
+  } catch (_) {}
+}
+
+function _fmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+}
+
+function startElapsedTimer() {
+  stopElapsedTimer();
+  _elapsedTimer = setInterval(() => {
+    if (!state.runStartedAt) return;
+    const el = document.getElementById("active-run-elapsed");
+    if (el) el.textContent = _fmtElapsed(Date.now() - state.runStartedAt);
+  }, 1000);
+}
+
+function stopElapsedTimer() {
+  if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
+  const el = document.getElementById("active-run-elapsed");
+  if (el) el.textContent = "";
+}
+
 async function startRun(ev) {
   ev.preventDefault();
   const btn = document.getElementById("start-btn");
@@ -434,20 +504,25 @@ async function startRun(ev) {
       status.textContent = `▸ started ${data.run_id}`;
       // Reset the active run view in case there's stale state from a prior run.
       state.activeRun = null;
+      // Collapse the controls form so the charts are visible.
+      const details = document.getElementById("controls-details");
+      if (details) details.removeAttribute("open");
     } else if (r.status === 409) {
       const data = await r.json();
       status.className = "busy";
       status.textContent = `busy — run ${data.detail.active_run_id} active`;
+      btn.disabled = false;
     } else {
       status.className = "err";
       status.textContent = `error: HTTP ${r.status}`;
+      btn.disabled = false;
     }
   } catch (e) {
     status.className = "err";
     status.textContent = `error: ${e.message}`;
-  } finally {
     btn.disabled = false;
   }
+  // Note: button stays disabled while runInProgress=true (WS run_done re-enables it).
 }
 
 // ---------------------------------------------------------------------
@@ -1116,36 +1191,36 @@ function renderKneeNote() {
 
 function renderAll() {
   const runs = runsToRender();
-  // Headline charts.
+  const W = 960, H = 320;
   drawSeriesChart(
     document.getElementById("chart-ttft"),
-    { width: 480, height: 280 },
+    { width: W, height: H },
     runs,
     (lv) => lv.delta ? lv.delta.ttft_p95 : null,
     { yLabel: "TTFT p95 (s)", yDigits: 3, emptyMessage: "no TTFT data" }
   );
   drawSeriesChart(
     document.getElementById("chart-latency"),
-    { width: 480, height: 280 },
+    { width: W, height: H },
     runs,
     (lv) => lv.delta ? lv.delta.lat_p99 : null,
     { yLabel: "latency p99 (s)", yDigits: 2, showKnee: true }
   );
   drawSeriesChart(
     document.getElementById("chart-saturation"),
-    { width: 960, height: 280 },
+    { width: W, height: H },
     runs,
     (lv) => lv.delta ? lv.delta.throughput_tps : null,
     { yLabel: "tokens/sec", yDigits: 0, showKnee: true }
   );
   const flags = drawLitellmPanel(
     document.getElementById("chart-litellm"),
-    { width: 960, height: 280 },
+    { width: W, height: H },
     runs
   );
   drawTaxonomy(
     document.getElementById("chart-taxonomy"),
-    { width: 640, height: 200 },
+    { width: W, height: 280 },
     runs
   );
   renderLevelTable();
@@ -1161,9 +1236,34 @@ function renderAll() {
 // Boot
 // ---------------------------------------------------------------------
 
+// ---------------------------------------------------------------------
+// Tab switching
+// ---------------------------------------------------------------------
+
+function initTabs() {
+  const nav = document.querySelector(".tab-nav");
+  if (!nav) return;
+  nav.addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab");
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    // Update tab buttons.
+    nav.querySelectorAll(".tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.tab === tab);
+      b.setAttribute("aria-selected", b.dataset.tab === tab ? "true" : "false");
+    });
+    // Update panels.
+    document.querySelectorAll(".tab-panel").forEach((p) => {
+      p.classList.toggle("active", p.dataset.tab === tab);
+    });
+  });
+}
+
 function wire() {
   const form = document.getElementById("start-form");
   if (form) form.addEventListener("submit", startRun);
+  const stopBtn = document.getElementById("stop-btn");
+  if (stopBtn) stopBtn.addEventListener("click", stopRun);
   const loadBtn = document.getElementById("load-btn");
   if (loadBtn) loadBtn.addEventListener("click", loadSelectedRuns);
   const clearBtn = document.getElementById("clear-btn");
@@ -1171,6 +1271,7 @@ function wire() {
   const refreshBtn = document.getElementById("refresh-btn");
   if (refreshBtn) refreshBtn.addEventListener("click", refreshSavedList);
 
+  initTabs();
   loadConfig();
   refreshSavedList();
   connect();

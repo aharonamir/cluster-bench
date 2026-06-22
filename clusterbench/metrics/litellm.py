@@ -13,12 +13,15 @@ per-user traffic.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 from clusterbench.metrics.base import percentile_at_bucket_edge
 from clusterbench.models import LevelDelta, ScrapeSnapshot
@@ -158,10 +161,11 @@ class LiteLLMSource:
         metrics_url: str,
         scrape_interval_s: float = 1.0,
         client: httpx.AsyncClient | None = None,
+        ssl_verify: bool = True,
     ) -> None:
         self.metrics_url = metrics_url
         self.scrape_interval_s = scrape_interval_s
-        self._client = client or httpx.AsyncClient(timeout=2.0)
+        self._client = client or httpx.AsyncClient(timeout=5.0, verify=ssl_verify)
         self._owns_client = client is None
 
     async def aclose(self) -> None:
@@ -174,11 +178,12 @@ class LiteLLMSource:
         try:
             resp = await self._client.get(self.metrics_url)
             resp.raise_for_status()
-        except (httpx.HTTPError, OSError, RuntimeError):
+        except (httpx.HTTPError, OSError, RuntimeError) as exc:
             # RuntimeError covers httpx's "client has been closed" — can happen
             # when the in-flight poller fires after teardown. Treat like any
             # other scrape failure: None → wire-metrics-unavailable, continue
             # (FR-14).
+            log.warning("metrics scrape failed url=%s err=%s", self.metrics_url, exc)
             return None
         samples = parse_prometheus_text(resp.text)
         raw = self._aggregate(samples)

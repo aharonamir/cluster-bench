@@ -206,13 +206,6 @@ main {
   gap: 1.25rem;
 }
 
-.row-2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1.25rem;
-}
-@media (max-width: 860px) { .row-2 { grid-template-columns: 1fr; } }
-
 .panel {
   background:
     linear-gradient(180deg, var(--surface-1), var(--surface-1)) padding-box;
@@ -234,7 +227,7 @@ main {
   font-size: 0.64rem;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--text-mute);
+  color: var(--text-dim);
   margin: 0 0 0.15rem;
 }
 h2.title {
@@ -244,13 +237,181 @@ h2.title {
   letter-spacing: -0.01em;
 }
 .subnote { font-size: 0.78rem; color: var(--text-dim); }
-.hint { color: var(--text-mute); font-size: 0.76rem; font-weight: 400; }
+.hint { color: var(--text-dim); font-size: 0.76rem; font-weight: 400; }
 
 .panel.hidden { display: none; }
 
 /* ===================================================================== */
-/* Charts                                                                */
+/* Run status badge (masthead right)                                     */
 /* ===================================================================== */
+
+.masthead-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.run-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: rgba(255, 82, 119, 0.1);
+  border: 1px solid rgba(255, 82, 119, 0.35);
+  border-radius: 999px;
+  padding: 0.22rem 0.75rem;
+  color: var(--knee);
+}
+.run-badge.running {
+  background: rgba(56, 224, 200, 0.1);
+  border-color: rgba(56, 224, 200, 0.35);
+  color: var(--live);
+}
+.run-badge .badge-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.4s ease-out infinite;
+}
+.run-badge.hidden { display: none; }
+
+/* ===================================================================== */
+/* Controls panel — collapsible                                          */
+/* ===================================================================== */
+
+.panel-compact { padding: 0; }
+
+#controls-details { padding: 0; }
+
+.controls-summary {
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.15rem;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius);
+}
+.controls-summary::-webkit-details-marker { display: none; }
+.controls-summary:hover { background: var(--surface-2); border-radius: var(--radius); }
+
+.summary-left { display: flex; flex-direction: column; }
+.summary-left .eyebrow { margin: 0 0 0.1rem; }
+.summary-left .title { margin: 0; }
+
+.summary-toggle-hint {
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#controls-details[open] .summary-toggle-hint { display: none; }
+
+#controls-details[open] .controls-summary {
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+#controls-details form {
+  padding: 1rem 1.15rem 1.2rem;
+}
+
+/* Degradation guards as inner collapsible. */
+.guards-details {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.guards-summary {
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text);
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+  user-select: none;
+}
+.guards-summary::-webkit-details-marker { display: none; }
+.guards-details[open] .guards-summary {
+  border-bottom: 1px dashed var(--line);
+}
+.guards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.7rem;
+  padding: 0.7rem 0.8rem 0.85rem;
+}
+
+/* ===================================================================== */
+/* Charts — tabbed                                                        */
+/* ===================================================================== */
+
+.charts-panel { padding: 0; overflow: hidden; }
+
+.tab-nav {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-nav::-webkit-scrollbar { display: none; }
+
+.tab-nav .tab {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.75rem 1.1rem;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.tab-nav .tab:hover:not(.active) { color: var(--text); }
+.tab-nav .tab.active {
+  color: var(--live);
+  border-bottom-color: var(--live);
+}
+.tab-nav .tab:active { transform: none; }
+
+.tab-panels { padding: 1rem 1.15rem 1.2rem; }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.panel-subhead {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-bottom: 0.85rem;
+}
+.panel-subhead .eyebrow {
+  display: inline;
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-right: 0.4rem;
+}
 
 .chart-svg {
   width: 100%;
@@ -268,7 +429,7 @@ h2.title {
 .cb-knee-line  { stroke: var(--knee); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.7; }
 .cb-knee-ring  { fill: none; stroke: var(--knee); stroke-width: 2; }
 
-.annotation { margin-top: 0.7rem; font-size: 0.8rem; font-family: var(--mono); color: var(--text-mute); }
+.annotation { margin-top: 0.7rem; font-size: 0.8rem; font-family: var(--mono); color: var(--text-dim); }
 .annotation.flagged { color: var(--warn); }
 
 /* ===================================================================== */
@@ -290,7 +451,7 @@ label {
   font-size: 0.64rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-mute);
+  color: var(--text-dim);
 }
 label.checkbox {
   flex-direction: row;
@@ -299,7 +460,7 @@ label.checkbox {
   text-transform: none;
   letter-spacing: 0.04em;
   font-size: 0.78rem;
-  color: var(--text-dim);
+  color: var(--text);
 }
 
 input, select {
@@ -381,6 +542,17 @@ button.ghost:hover:not(:disabled) {
   color: var(--text);
   border-color: var(--text-dim);
 }
+
+button.btn-danger {
+  background: #7a1c1c;
+  border-color: #c0392b;
+  color: #ffb3b3;
+}
+button.btn-danger:hover:not(:disabled) {
+  background: #9b2226;
+  box-shadow: 0 0 12px rgba(192, 57, 43, 0.5);
+}
+button.hidden { display: none; }
 
 #start-status { font-family: var(--mono); font-size: 0.76rem; color: var(--text-dim); }
 #start-status.ok   { color: var(--live); }

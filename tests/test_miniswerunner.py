@@ -47,16 +47,29 @@ def test_build_cmd_has_required_flags():
     assert cmd[:2] == ["mini-extra", "swebench"]
     # Workers reflect the level (FR-5).
     assert "--workers" in cmd and cmd[cmd.index("--workers") + 1] == "8"
-    # Pinned slice passed verbatim.
-    assert "--instances" in cmd
-    assert cmd[cmd.index("--instances") + 1] == "a,b,c"
-    # Model named (the env points the OpenAI client at LiteLLM, FR-3).
-    assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "gpt-4o-mini"
+    # Instances passed as an exact-match regex via --filter (not --instances).
+    assert "--filter" in cmd
+    filter_val = cmd[cmd.index("--filter") + 1]
+    import re
+    for iid in ["a", "b", "c"]:
+        assert re.match(filter_val, iid), f"filter should match {iid!r}"
+    assert not re.match(filter_val, "a_extra"), "filter should not match prefix"
+    # Model prefixed with openai/ so litellm routes through OPENAI_API_BASE.
+    assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "openai/gpt-4o-mini"
     # out_dir present.
     assert "-o" in cmd and cmd[cmd.index("-o") + 1] == "/tmp/out"
     # Subset/split default to verified/test (FR-2).
     assert "--subset" in cmd and cmd[cmd.index("--subset") + 1] == "verified"
     assert "--split" in cmd and cmd[cmd.index("--split") + 1] == "test"
+    # --redo-existing always present.
+    assert "--redo-existing" in cmd
+
+
+def test_build_cmd_model_with_provider_prefix_not_doubled():
+    cmd = build_cmd(
+        level=1, instance_ids=["x"], model="anthropic/claude-3-5-haiku", out_dir=Path("/o")
+    )
+    assert cmd[cmd.index("--model") + 1] == "anthropic/claude-3-5-haiku"
 
 
 def test_build_cmd_step_limit_omitted_when_zero():
@@ -67,7 +80,7 @@ def test_build_cmd_step_limit_omitted_when_zero():
         out_dir=Path("/tmp/o"),
         step_limit=0,
     )
-    assert "--step-limit" not in cmd
+    assert "-c" not in cmd or "agent.step_limit" not in " ".join(cmd)
 
 
 def test_build_cmd_step_limit_emitted_when_positive():
@@ -78,7 +91,12 @@ def test_build_cmd_step_limit_emitted_when_positive():
         out_dir=Path("/tmp/o"),
         step_limit=20,
     )
-    assert "--step-limit" in cmd and cmd[cmd.index("--step-limit") + 1] == "20"
+    assert "-c" in cmd
+    c_indices = [i for i, tok in enumerate(cmd) if tok == "-c"]
+    config_values = [cmd[i + 1] for i in c_indices]
+    # swebench.yaml must be included so typer doesn't drop the default config.
+    assert any("swebench" in v for v in config_values)
+    assert any("agent.step_limit=20" in v for v in config_values)
 
 
 def test_build_cmd_rejects_invalid_inputs():

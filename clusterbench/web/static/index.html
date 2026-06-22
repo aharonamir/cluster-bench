@@ -17,8 +17,11 @@
       <h1><span class="cluster">Cluster</span><span class="bench">Bench</span></h1>
       <span class="tag">saturation telemetry</span>
     </div>
-    <div id="connection-indicator" class="indicator disconnected" title="WebSocket connection state">
-      <span class="dot"></span><span class="label">offline</span>
+    <div class="masthead-right">
+      <div id="run-status-badge" class="run-badge hidden"></div>
+      <div id="connection-indicator" class="indicator disconnected" title="WebSocket connection state">
+        <span class="dot"></span><span class="label">offline</span>
+      </div>
     </div>
   </div>
 
@@ -37,46 +40,51 @@
 <main>
 
   <!-- ================= Controls ================= -->
-  <section id="controls" class="panel">
-    <div class="panel-head">
-      <div>
-        <p class="eyebrow">load generator</p>
-        <h2 class="title">Start a run</h2>
-      </div>
-      <span class="hint">model &amp; endpoints come from the server config above</span>
-    </div>
-    <form id="start-form">
-      <div class="grid">
-        <label>name <input name="name" type="text" placeholder="optional label"></label>
-        <label>mode
-          <select name="mode">
-            <option value="sweep">sweep</option>
-            <option value="soak">soak</option>
-          </select>
-        </label>
-        <label>levels / soak level
-          <input name="levels" type="text" value="1, 4, 8, 16" placeholder="comma-separated">
-        </label>
-        <label>soak duration (s) <input name="soak_duration_s" type="number" value="1800" min="1" step="1"></label>
-        <label>slice size (n) <input name="n" type="number" value="5" min="1" step="1"></label>
-        <label>scrape interval (s) <input name="scrape_interval_s" type="number" value="1" min="0.05" step="0.05"></label>
-        <label>model <input name="model" type="text" placeholder="(server default)"></label>
-        <label class="checkbox"><input name="streaming" type="checkbox" checked> stream (enables TTFT)</label>
+  <section id="controls" class="panel panel-compact">
+    <details id="controls-details">
+      <summary class="controls-summary">
+        <div class="summary-left">
+          <p class="eyebrow">load generator</p>
+          <h2 class="title">Start a run</h2>
+        </div>
+        <span class="summary-toggle-hint">click to expand</span>
+      </summary>
+      <form id="start-form">
+        <div class="grid">
+          <label>name <input name="name" type="text" placeholder="optional label"></label>
+          <label>mode
+            <select name="mode">
+              <option value="sweep">sweep</option>
+              <option value="soak">soak</option>
+            </select>
+          </label>
+          <label>levels / soak level
+            <input name="levels" type="text" value="1, 4, 8, 16" placeholder="comma-separated">
+          </label>
+          <label>soak duration (s) <input name="soak_duration_s" type="number" value="1800" min="1" step="1"></label>
+          <label>slice size (n) <input name="n" type="number" value="5" min="1" step="1"></label>
+          <label>scrape interval (s) <input name="scrape_interval_s" type="number" value="1" min="0.05" step="0.05"></label>
+          <label>model <input name="model" type="text" placeholder="(server default)"></label>
+          <label class="checkbox"><input name="streaming" type="checkbox" checked> stream (enables TTFT)</label>
 
-        <fieldset class="guards">
-          <legend>degradation guards — first trip marks the knee</legend>
-          <label>max p99 lat (s) <input name="guard_max_p99" type="number" placeholder="off" min="0" step="0.01"></label>
-          <label>max ttft p95 (s) <input name="guard_max_ttft_p95" type="number" placeholder="off" min="0" step="0.01"></label>
-          <label>max error rate <input name="guard_max_error_rate" type="number" placeholder="off" min="0" max="1" step="0.01"></label>
-          <label>min pass rate <input name="guard_min_pass_rate" type="number" placeholder="off" min="0" max="1" step="0.01"></label>
-          <label>max in-flight <input name="guard_max_in_flight" type="number" placeholder="off" min="0" step="1"></label>
-        </fieldset>
-      </div>
-      <div class="actions">
-        <button id="start-btn" type="submit">Start run</button>
-        <span id="start-status"></span>
-      </div>
-    </form>
+          <details class="guards-details">
+            <summary class="guards-summary">degradation guards — first trip marks the knee</summary>
+            <div class="guards-grid">
+              <label>max p99 lat (s) <input name="guard_max_p99" type="number" placeholder="off" min="0" step="0.01"></label>
+              <label>max ttft p95 (s) <input name="guard_max_ttft_p95" type="number" placeholder="off" min="0" step="0.01"></label>
+              <label>max error rate <input name="guard_max_error_rate" type="number" placeholder="off" min="0" max="1" step="0.01"></label>
+              <label>min pass rate <input name="guard_min_pass_rate" type="number" placeholder="off" min="0" max="1" step="0.01"></label>
+              <label>max in-flight <input name="guard_max_in_flight" type="number" placeholder="off" min="0" step="1"></label>
+            </div>
+          </details>
+        </div>
+        <div class="actions">
+          <button id="start-btn" type="submit">Start run</button>
+          <button id="stop-btn" type="button" class="btn-danger hidden">Stop run</button>
+          <span id="start-status"></span>
+        </div>
+      </form>
+    </details>
   </section>
 
   <!-- ================= Active run ================= -->
@@ -84,100 +92,83 @@
     <div class="panel-head">
       <div>
         <p class="eyebrow">in flight</p>
-        <h2 class="title">Active run</h2>
+        <h2 class="title">Active run <span class="hint" id="active-run-elapsed"></span></h2>
       </div>
     </div>
     <div id="active-run-meta"></div>
   </section>
 
-  <!-- ================= Headline graphs ================= -->
-  <div class="row-2">
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <p class="eyebrow">headline</p>
-          <h2 class="title">Agents vs TTFT <span class="hint" id="ttft-hint"></span></h2>
+  <!-- ================= Charts (tabbed) ================= -->
+  <section class="panel charts-panel">
+    <nav class="tab-nav" role="tablist">
+      <button class="tab active" data-tab="ttft"       role="tab" aria-selected="true">TTFT <span class="hint" id="ttft-hint"></span></button>
+      <button class="tab"        data-tab="latency"    role="tab">Latency</button>
+      <button class="tab"        data-tab="saturation" role="tab">Saturation</button>
+      <button class="tab"        data-tab="litellm"    role="tab">LiteLLM</button>
+      <button class="tab"        data-tab="taxonomy"   role="tab">Taxonomy</button>
+      <button class="tab"        data-tab="table"      role="tab">Per-level</button>
+    </nav>
+
+    <div class="tab-panels">
+      <!-- TTFT -->
+      <div class="tab-panel active" data-tab="ttft">
+        <div class="panel-subhead"><span class="eyebrow">headline</span> Agents vs first-token latency</div>
+        <svg id="chart-ttft" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+
+      <!-- Latency -->
+      <div class="tab-panel" data-tab="latency">
+        <div class="panel-subhead"><span class="eyebrow">headline</span> Agents vs end-to-end latency <span class="hint">p99</span></div>
+        <svg id="chart-latency" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+
+      <!-- Saturation -->
+      <div class="tab-panel" data-tab="saturation">
+        <div class="panel-subhead"><span class="eyebrow">where it bends</span> Saturation curve <span class="hint">throughput vs concurrency</span> <span id="knee-note" class="hint"></span></div>
+        <svg id="chart-saturation" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+
+      <!-- LiteLLM -->
+      <div class="tab-panel" data-tab="litellm">
+        <div class="panel-subhead"><span class="eyebrow">proxy-side · not GPU-side</span> LiteLLM saturation <span class="hint">in-flight peak + processing overhead</span></div>
+        <svg id="chart-litellm" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
+        <div id="queue-annotation" class="annotation"></div>
+      </div>
+
+      <!-- Taxonomy -->
+      <div class="tab-panel" data-tab="taxonomy">
+        <div class="panel-subhead"><span class="eyebrow">reliability vs load</span> Outcome taxonomy</div>
+        <svg id="chart-taxonomy" class="chart-svg" viewBox="0 0 960 280" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+
+      <!-- Per-level table -->
+      <div class="tab-panel" data-tab="table">
+        <div class="panel-subhead"><span class="eyebrow">drilldown</span> Per-level detail <span class="hint">percentiles are bucket-edge (coarse)</span></div>
+        <div class="table-scroll">
+          <table id="level-table">
+            <thead>
+              <tr>
+                <th rowspan="2">run</th>
+                <th rowspan="2">level</th>
+                <th colspan="2">TTFT (s)</th>
+                <th colspan="3">latency (s)</th>
+                <th rowspan="2">tok/s</th>
+                <th rowspan="2">pass</th>
+                <th rowspan="2">err</th>
+                <th rowspan="2">in-flight</th>
+                <th rowspan="2">outcomes</th>
+                <th rowspan="2">wall (s)</th>
+              </tr>
+              <tr>
+                <th>p50</th><th>p95</th>
+                <th>p50</th><th>p95</th><th>p99</th>
+              </tr>
+            </thead>
+            <tbody id="level-table-body"></tbody>
+          </table>
         </div>
       </div>
-      <svg id="chart-ttft" class="chart-svg" viewBox="0 0 480 280" preserveAspectRatio="xMidYMid meet"></svg>
-    </section>
-    <section class="panel">
-      <div class="panel-head">
-        <div>
-          <p class="eyebrow">headline</p>
-          <h2 class="title">Agents vs latency <span class="hint">p99</span></h2>
-        </div>
-      </div>
-      <svg id="chart-latency" class="chart-svg" viewBox="0 0 480 280" preserveAspectRatio="xMidYMid meet"></svg>
-    </section>
-  </div>
-
-  <!-- ================= Saturation curve ================= -->
-  <section class="panel">
-    <div class="panel-head">
-      <div>
-        <p class="eyebrow">where it bends</p>
-        <h2 class="title">Saturation curve <span class="hint">throughput vs concurrency</span></h2>
-      </div>
-      <span id="knee-note" class="hint"></span>
     </div>
-    <svg id="chart-saturation" class="chart-svg" viewBox="0 0 960 280" preserveAspectRatio="xMidYMid meet"></svg>
-  </section>
-
-  <!-- ================= LiteLLM-side saturation ================= -->
-  <section class="panel">
-    <div class="panel-head">
-      <div>
-        <p class="eyebrow">proxy-side · not GPU-side</p>
-        <h2 class="title">LiteLLM saturation <span class="hint">in-flight peak + processing overhead</span></h2>
-      </div>
-    </div>
-    <svg id="chart-litellm" class="chart-svg" viewBox="0 0 960 280" preserveAspectRatio="xMidYMid meet"></svg>
-    <div id="queue-annotation" class="annotation"></div>
-  </section>
-
-  <!-- ================= Per-level table ================= -->
-  <section class="panel">
-    <div class="panel-head">
-      <div>
-        <p class="eyebrow">drilldown</p>
-        <h2 class="title">Per-level detail <span class="hint">percentiles are bucket-edge (coarse)</span></h2>
-      </div>
-    </div>
-    <div class="table-scroll">
-      <table id="level-table">
-        <thead>
-          <tr>
-            <th rowspan="2">run</th>
-            <th rowspan="2">level</th>
-            <th colspan="2">TTFT (s)</th>
-            <th colspan="3">latency (s)</th>
-            <th rowspan="2">tok/s</th>
-            <th rowspan="2">pass</th>
-            <th rowspan="2">err</th>
-            <th rowspan="2">in-flight</th>
-            <th rowspan="2">outcomes</th>
-            <th rowspan="2">wall (s)</th>
-          </tr>
-          <tr>
-            <th>p50</th><th>p95</th>
-            <th>p50</th><th>p95</th><th>p99</th>
-          </tr>
-        </thead>
-        <tbody id="level-table-body"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- ================= Outcome taxonomy ================= -->
-  <section class="panel">
-    <div class="panel-head">
-      <div>
-        <p class="eyebrow">reliability vs load</p>
-        <h2 class="title">Outcome taxonomy</h2>
-      </div>
-    </div>
-    <svg id="chart-taxonomy" class="chart-svg" viewBox="0 0 640 200" preserveAspectRatio="xMidYMid meet"></svg>
   </section>
 
   <!-- ================= Saved reports / overlay ================= -->
@@ -185,11 +176,11 @@
     <div class="panel-head">
       <div>
         <p class="eyebrow">compare</p>
-        <h2 class="title">Saved reports <span class="hint">load 2+ to overlay on the headline axes</span></h2>
+        <h2 class="title">Saved reports <span class="hint">load 2+ to overlay on headline axes</span></h2>
       </div>
     </div>
     <div class="saved-controls">
-      <select id="saved-select" multiple size="6"></select>
+      <select id="saved-select" multiple size="5"></select>
       <div class="saved-actions">
         <button class="ghost" id="load-btn" type="button">Load selected</button>
         <button class="ghost" id="clear-btn" type="button">Clear overlay</button>
@@ -214,6 +205,8 @@
 
 <footer>
   ClusterBench · scrape-and-delta over LiteLLM /metrics · percentiles are bucket-edge · GPU-side causation not claimed
+  · <a href="/api/diagnostics" target="_blank" style="color:var(--text-mute);text-decoration:none;">/api/diagnostics</a>
+  · <a href="/api/health" target="_blank" style="color:var(--text-mute);text-decoration:none;">/api/health</a>
 </footer>
 
 <script src="/static/app.js" defer></script>

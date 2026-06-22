@@ -120,7 +120,7 @@ def resolve_config(args: argparse.Namespace) -> ServerConfig:
 
 
 def _real_runner_factory(
-    *, base_url: str, api_key: str, step_limit: int, runner_root: Path
+    *, base_url: str, api_key: str, step_limit: int, runner_root: Path, ssl_verify: bool = True
 ):
     """Build a RunnerFactory that drives mini-swe-agent per level."""
     try:
@@ -140,6 +140,7 @@ def _real_runner_factory(
             step_limit=step_limit or config.miniswe.step_limit,
             streaming=config.miniswe.streaming,
             api_key=api_key,
+            ssl_verify=ssl_verify,
             runner_root=runner_root,
         )
 
@@ -157,6 +158,7 @@ def build_app(cfg: ServerConfig):
             api_key=cfg.api_key,
             step_limit=cfg.step_limit,
             runner_root=runner_root,
+            ssl_verify=cfg.ssl_verify,
         )
     else:
         runner_factory = default_runner_factory(
@@ -173,12 +175,15 @@ def build_app(cfg: ServerConfig):
         return LiteLLMSource(
             metrics_url=cfg.metrics_url,
             scrape_interval_s=config.scrape_interval_s,
+            ssl_verify=cfg.ssl_verify,
         )
 
     return create_app(
         results_dir=results_dir,
         runner_factory=runner_factory,
         source_factory=source_factory,
+        real=cfg.real,
+        ssl_verify=cfg.ssl_verify,
         run_defaults={
             "model": cfg.model,
             "streaming": cfg.streaming,

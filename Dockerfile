@@ -30,13 +30,20 @@ ENV UV_LINK_MODE=copy \
 
 WORKDIR /app
 
+# Install Docker CLI so mini-swe-agent can spawn sibling containers via the
+# mounted host socket. Only needed for the real path; skipped in mock builds.
+ARG INSTALL_EXTRA=""
+RUN if [ -n "$INSTALL_EXTRA" ]; then \
+        apt-get update -qq && \
+        apt-get install -y --no-install-recommends docker.io && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # --- Dependency layer (cached unless lockfile or pyproject changes) ---------
 # Copy only the manifest + lock first so the (slow) dependency install is
 # cached across source edits.
 COPY pyproject.toml uv.lock ./
 
-# INSTALL_EXTRA=real adds mini-swe-agent + swebench; default is the mock path.
-ARG INSTALL_EXTRA=""
 # --no-install-project: install deps only here; the project itself is added in
 # the next layer so source edits don't bust the dependency cache. --no-dev:
 # the runtime image doesn't need pytest/playwright.

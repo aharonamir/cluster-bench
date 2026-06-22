@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import re
 import shutil
 import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 from clusterbench.models import LevelRunResult, PredRecord, ProcessRecord
 
@@ -86,22 +91,43 @@ def build_cmd(
     environment on the subprocess (see `env_for_subprocess`); the cmd itself
     just names the model so mini-swe-agent knows which LiteLLM route to hit.
     Step limit 0 = unlimited.
+
+    CLI flags verified against minisweagent 2.4.1 swebench.py:
+      --filter  : regex matched against instance_id (re.match, anchored at start)
+      --workers : concurrency
+      --model   : model_name; prefixed with "openai/" so litellm routes through
+                  OPENAI_API_BASE (the LiteLLM proxy set in env_for_subprocess)
+      -c        : config spec override; used for agent.step_limit
+      --redo-existing : always re-run since we clear out_dir before the call
     """
     if level < 1:
         raise ValueError(f"level must be >= 1, got {level}")
     if not instance_ids:
         raise ValueError("instance_ids must not be empty")
+
+    # Build an exact-match regex for our pinned instance IDs.
+    # re.match anchors at the start; "$" ensures we don't match a prefix.
+    filter_regex = "^(" + "|".join(re.escape(iid) for iid in instance_ids) + ")$"
+
+    # Prefix model with "openai/" so litellm routes through OPENAI_API_BASE
+    # (our LiteLLM proxy). If the caller already includes a provider prefix
+    # (e.g. "anthropic/..."), leave it as-is.
+    model_arg = model if "/" in model else f"openai/{model}"
+
     cmd: list[str] = [
         "mini-extra", "swebench",
         "--subset", subset,
         "--split", split,
         "--workers", str(level),
-        "--instances", ",".join(instance_ids),
-        "--model", model,
+        "--filter", filter_regex,
+        "--model", model_arg,
         "-o", str(out_dir),
+        "--redo-existing",   # we already cleared out_dir; skip stale-check
     ]
     if step_limit > 0:
-        cmd += ["--step-limit", str(step_limit)]
+        # Passing any -c replaces typer's default [swebench.yaml] list, so we
+        # must re-include the base config before our override.
+        cmd += ["-c", "swebench.yaml", "-c", f"agent.step_limit={step_limit}"]
     if extra_args:
         cmd += list(extra_args)
     return cmd
@@ -111,15 +137,30 @@ def env_for_subprocess(
     *,
     base_url: str,
     api_key: str = "sk-mock",
+    ssl_verify: bool = True,
     base: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the env for the mini-swe-agent subprocess so its OpenAI client
     hits LiteLLM (FR-3). Streaming is mini-swe-agent's default; we don't
     disable it (FR-12 — TTFT needs streaming).
+
+    ssl_verify=False sets several env vars that disable TLS verification in
+    Python HTTP stacks (urllib, requests, httpx via HTTPX_SSL_VERIFY, openai
+    via OPENAI_VERIFY_SSL). Needed when LiteLLM uses a corporate CA not
+    present inside the container.
     """
-    env = dict(base if base is not None else {})
+    env = dict(os.environ if base is None else base)
     env[ENV_OPENAI_BASE] = base_url
     env[ENV_OPENAI_KEY] = api_key
+    if not ssl_verify:
+        # Cover the main Python HTTP stacks. httpx (used by openai >= 1.x)
+        # reads HTTPX_SSL_VERIFY; requests reads REQUESTS_CA_BUNDLE (empty =
+        # system default, so set CURL_CA_BUNDLE too for curl-based paths).
+        env["HTTPX_SSL_VERIFY"] = "0"
+        env["OPENAI_VERIFY_SSL"] = "false"
+        env["REQUESTS_CA_BUNDLE"] = ""
+        env["CURL_CA_BUNDLE"] = ""
+        env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
     return env
 
 
@@ -332,6 +373,7 @@ class MiniSweRunner:
         step_limit: int = 0,
         streaming: bool = True,
         api_key: str = "sk-mock",
+        ssl_verify: bool = True,
         timeout_s: float | None = None,
         runner_root: Path | str | None = None,
     ) -> None:
@@ -343,6 +385,7 @@ class MiniSweRunner:
         self.step_limit = step_limit
         self.streaming = streaming
         self.api_key = api_key
+        self.ssl_verify = ssl_verify
         self.timeout_s = timeout_s
         self.runner_root = Path(runner_root) if runner_root else Path("results/miniswe")
         self.runner_root.mkdir(parents=True, exist_ok=True)
@@ -368,28 +411,35 @@ class MiniSweRunner:
         env = env_for_subprocess(
             base_url=self.base_url,
             api_key=self.api_key,
+            ssl_verify=self.ssl_verify,
         )
         t0 = time.monotonic()
+        log.info("mini-swe-agent starting: level=%d cmd=%s", level, " ".join(cmd))
         try:
+            # Inherit parent stdout/stderr so mini-swe-agent output appears in
+            # `docker logs` in real-time. PIPE would silently swallow everything.
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=None,
+                stderr=None,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
                 "mini-extra not found on PATH; install with `uv sync --extra real`"
             ) from exc
         try:
-            await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
+            await asyncio.wait_for(proc.wait(), timeout=self.timeout_s)
         except asyncio.TimeoutError:
+            log.warning("mini-swe-agent timed out at level %d, killing", level)
             proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=10)
             except asyncio.TimeoutError:
                 proc.kill()
         duration = time.monotonic() - t0
+        log.info("mini-swe-agent done: level=%d rc=%s duration=%.1fs",
+                 level, proc.returncode, duration)
 
         process_records, preds = parse_out_dir(out_dir)
         return LevelRunResult(

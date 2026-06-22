@@ -51,6 +51,13 @@ class ServerConfig:
     # mini-swe-agent (needs the `real` extra + Docker).
     real: bool = False
 
+    # --- TLS / SSL --------------------------------------------------------
+    # Set ssl_verify: false when the LiteLLM endpoint uses a corporate CA
+    # that is not available inside the container. Disables verification for
+    # both the metrics scrape client and the mini-swe-agent API subprocess.
+    # The proper fix is to mount the CA cert and set SSL_CERT_FILE instead.
+    ssl_verify: bool = True
+
     # --- Per-run defaults (a POST /api/run body may override these) -------
     model: str = "gpt-4o-mini"
     streaming: bool = True
@@ -68,6 +75,7 @@ class ServerConfig:
         self.scrape_interval_s = float(self.scrape_interval_s)
         self.real = bool(self.real)
         self.streaming = bool(self.streaming)
+        self.ssl_verify = bool(self.ssl_verify)
 
     @classmethod
     def _field_names(cls) -> set[str]:

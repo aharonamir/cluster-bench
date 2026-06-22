@@ -28,6 +28,13 @@ metrics_url: http://localhost:4000/metrics
 # true  -> real mini-swe-agent subprocess (needs `uv sync --extra real` + Docker).
 real: false
 
+# --- TLS/SSL ----------------------------------------------------------------
+# true  -> verify TLS certificates (default, recommended).
+# false -> skip verification. Use when LiteLLM uses a corporate CA that is not
+#          available inside the Docker container. The proper fix is to mount
+#          the CA cert and set SSL_CERT_FILE, but ssl_verify: false is faster.
+ssl_verify: true
+
 # --- Per-run defaults -------------------------------------------------------
 # These set the defaults a POST /api/run body inherits when it omits them.
 # An explicit value in the request body always wins.

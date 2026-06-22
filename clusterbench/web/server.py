@@ -14,9 +14,14 @@ factories so tests can swap mock_litellm for a fake without going over HTTP.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
+
+log = logging.getLogger(__name__)
+
+import httpx
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -134,6 +139,8 @@ class _ServerState:
         hub: WebSocketHub,
         run_defaults: dict[str, Any] | None = None,
         server_info: dict[str, Any] | None = None,
+        real: bool = False,
+        ssl_verify: bool = True,
     ) -> None:
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -144,6 +151,9 @@ class _ServerState:
         # Non-secret server wiring surfaced to the dashboard via /api/config.
         # Never holds the api_key.
         self.server_info = server_info or {}
+        # Whether this server was started in real mode (drives pin_slice mock vs real).
+        self.real = real
+        self.ssl_verify = ssl_verify
         self._lock = asyncio.Lock()
         self._active_run_id: str | None = None
         self._active_task: asyncio.Task[RunReport] | None = None
@@ -182,13 +192,27 @@ class _ServerState:
             )
             return config.run_id
 
+    async def cancel_run(self) -> str | None:
+        """Cancel the in-flight run. Returns the cancelled run_id, or None if
+        nothing was running."""
+        async with self._lock:
+            if self._active_task is None or self._active_task.done():
+                return None
+            run_id = self._active_run_id
+            self._active_task.cancel()
+            return run_id
+
     def _is_task_done(self) -> bool:
         return self._active_task is not None and self._active_task.done()
 
     async def _drive(self, orchestrator: Orchestrator, runner: Runner) -> RunReport:
         """Run orchestrator.run(), then persist + clear the active slot."""
+        log.info("run starting: run_id=%s", orchestrator.config.run_id)
         try:
             report = await orchestrator.run()
+        except Exception:
+            log.exception("run failed: run_id=%s", orchestrator.config.run_id)
+            raise
         finally:
             # Release the runner's resources (e.g. close httpx clients).
             aclose = getattr(runner, "aclose", None)
@@ -227,6 +251,8 @@ def create_app(
     serve_static: bool = True,
     run_defaults: dict[str, Any] | None = None,
     server_info: dict[str, Any] | None = None,
+    real: bool = False,
+    ssl_verify: bool = True,
 ) -> FastAPI:
     """Build a FastAPI app. Defaults wire the mock path; tests pass their own
     factories + hub to skip HTTP plumbing.
@@ -260,6 +286,8 @@ def create_app(
         hub=hub,
         run_defaults=run_defaults or {},
         server_info=server_info or {},
+        real=real,
+        ssl_verify=ssl_verify,
     )
 
     app = FastAPI(title="clusterbench")
@@ -302,6 +330,43 @@ def _register_routes(
             "n_subscribers": state.hub.n_subscribers,
         }
 
+    @app.get("/api/diagnostics")
+    async def diagnostics() -> dict[str, Any]:
+        """Test metrics URL reachability + mini-extra PATH presence.
+        Safe to call at any time — read-only, no side effects."""
+        import shutil as _shutil
+
+        metrics_url = state.server_info.get("metrics_url", "")
+        metrics_ok = False
+        metrics_status = None
+        metrics_sample_count = 0
+        metrics_error = None
+        if metrics_url:
+            try:
+                async with httpx.AsyncClient(timeout=5.0, verify=state.ssl_verify) as c:
+                    r = await c.get(metrics_url)
+                    metrics_status = r.status_code
+                    metrics_ok = r.status_code == 200
+                    if metrics_ok:
+                        from clusterbench.metrics.litellm import parse_prometheus_text
+                        metrics_sample_count = len(parse_prometheus_text(r.text))
+            except Exception as exc:
+                metrics_error = str(exc)
+
+        mini_extra_path = _shutil.which("mini-extra")
+
+        return {
+            "metrics_url": metrics_url,
+            "metrics_reachable": metrics_ok,
+            "metrics_http_status": metrics_status,
+            "metrics_sample_count": metrics_sample_count,
+            "metrics_error": metrics_error,
+            "mini_extra_on_path": mini_extra_path is not None,
+            "mini_extra_path": mini_extra_path,
+            "real_mode": state.real,
+            "active_run_id": state.active_run_id,
+        }
+
     @app.get("/api/config")
     async def config() -> dict[str, Any]:
         """Non-secret server wiring + run defaults, for the dashboard to
@@ -315,7 +380,7 @@ def _register_routes(
     async def start_run(body: StartRunBody) -> JSONResponse:
         run_id = uuid.uuid4().hex[:12]
         config = _build_run_config(run_id, body, state.run_defaults)
-        pinned = _resolve_pinned(config)
+        pinned = _resolve_pinned(config, real=state.real)
         await state.try_start(config, pinned=pinned)
         return JSONResponse(
             status_code=202,
@@ -325,6 +390,13 @@ def _register_routes(
                 "config": config.to_dict(),
             },
         )
+
+    @app.delete("/api/run")
+    async def cancel_run() -> JSONResponse:
+        run_id = await state.cancel_run()
+        if run_id is None:
+            raise HTTPException(status_code=404, detail={"error": "no_active_run"})
+        return JSONResponse(status_code=200, content={"cancelled_run_id": run_id})
 
     @app.get("/api/runs")
     async def list_runs() -> dict[str, Any]:
@@ -418,17 +490,44 @@ def _build_run_config(
     )
 
 
-def _resolve_pinned(config: RunConfig) -> list[str]:
-    """Pin the slice once. Reused at every level (AC-10)."""
+def _resolve_pinned(config: RunConfig, *, real: bool = False) -> list[str]:
+    """Pin the slice once. Reused at every level (AC-10).
+
+    In mock mode (default), returns synthetic IDs so no dataset download is
+    needed. In real mode, loads instance IDs from the SWE-bench dataset via
+    datasets (requires the `real` extra).
+    """
     from clusterbench.miniswerunner import pin_slice
 
     if config.task_slice.pinned_instance_ids:
         return list(config.task_slice.pinned_instance_ids)
+
+    if not real:
+        return pin_slice(
+            n=config.task_slice.n,
+            subset=config.task_slice.subset,
+            split=config.task_slice.split,
+            mock=True,
+        )
+
+    # Real path: load from the SWE-bench Verified dataset.
+    try:
+        from datasets import load_dataset  # type: ignore[import]
+    except ImportError as exc:
+        raise RuntimeError(
+            "real path needs the `datasets` package; install with `uv sync --extra real`"
+        ) from exc
+
+    def _loader(*, subset: str, split: str) -> list[str]:
+        ds = load_dataset("princeton-nlp/SWE-bench_Verified", split=split)
+        return [row["instance_id"] for row in ds]
+
     return pin_slice(
         n=config.task_slice.n,
         subset=config.task_slice.subset,
         split=config.task_slice.split,
-        mock=True,
+        mock=False,
+        dataset_loader=_loader,
     )
 
 
