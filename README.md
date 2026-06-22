@@ -245,9 +245,15 @@ task-score metrics are still collected (FR-14).
 | `soak_duration_s` | `1800` | SOAK only |
 | `task_slice` | `{n: 5}` | `{subset, split, n, pinned_instance_ids}` |
 | `guards` | `{}` | any of `max_p99_latency_s`, `max_ttft_p95_s`, `max_error_rate`, `min_pass_rate`, `max_in_flight_peak` |
-| `scrape_interval_s` | `1.0` | metrics scrape cadence |
-| `model` | `gpt-4o-mini` | model name passed to LiteLLM |
-| `streaming` | `true` | needed for TTFT |
+| `scrape_interval_s` | server default → `1.0` | metrics scrape cadence |
+| `model` | server default → `gpt-4o-mini` | model name passed to LiteLLM |
+| `streaming` | server default → `true` | needed for TTFT |
+| `step_limit` | server default → `0` | per-task agent step cap (0 = unlimited) |
+
+`model`, `streaming`, `scrape_interval_s`, and `step_limit` are **server-level
+defaults**: when omitted from the body they're inherited from the server's
+`config.yaml` (see [Running the real path](#running-the-real-path)); an explicit
+value in the request always wins.
 
 Any tripped **guard** marks the **knee** (first trip wins, with a reason); the
 sweep continues so the full curve is still mapped.
@@ -333,9 +339,17 @@ clusterbench/
     hub.py               WebSocket fan-out + bounded history replay
     persistence.py       RunReport JSON save/load/list
     static/              dashboard (index.html, app.js, styles.css)
+  config.py              ServerConfig — YAML launch config + CLI-override merge
 mock_litellm.py          fake LiteLLM proxy (mock path)
 mock_minisweagent.py     fake agent output (mock path)
 run_server.py            uvicorn entrypoint (mock by default, --real opt-in)
+config.example.yaml      launch-config template (copy to config.yaml)
 ```
 
-Full spec lives in `.spec/` (`README.md` → `spec.md` → `plan.md` → `tasks.md`).
+## Further reading
+
+- **[OPERATING.md](OPERATING.md)** — step-by-step operations runbook: full
+  mock- and real-path flows, SOAK, the live event vocabulary, outcome taxonomy,
+  Docker, and a troubleshooting table.
+- **`.spec/`** — the full spec (`README.md` → `spec.md` → `plan.md` →
+  `tasks.md`).
