@@ -136,6 +136,7 @@ come from*.
 ```bash
 # Terminal B
 uv run python run_server.py --config config.yaml
+SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt uv run python run_server.py --config config.yaml
 ```
 
 **Option B — inline CLI flags.** Pass the settings directly; anything omitted

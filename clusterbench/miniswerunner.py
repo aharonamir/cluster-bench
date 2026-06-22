@@ -152,6 +152,9 @@ def env_for_subprocess(
     env = dict(os.environ if base is None else base)
     env[ENV_OPENAI_BASE] = base_url
     env[ENV_OPENAI_KEY] = api_key
+    # Suppress cost-tracking errors for models not in litellm's price table
+    # (e.g. custom LiteLLM routes). A missing price is never a reason to abort.
+    env["MSWEA_COST_TRACKING"] = "ignore_errors"
     if not ssl_verify:
         # Cover the main Python HTTP stacks. httpx (used by openai >= 1.x)
         # reads HTTPX_SSL_VERIFY; requests reads REQUESTS_CA_BUNDLE (empty =
