@@ -146,6 +146,21 @@ def test_snapshot_unreachable_returns_none():
     assert asyncio.run(go()) is None
 
 
+def test_snapshot_on_closed_client_returns_none():
+    """FR-14 robustness: the in-flight poller can fire after the shared httpx
+    client is closed (teardown race). httpx raises RuntimeError there; snapshot
+    must swallow it like any scrape failure rather than crashing the poll
+    task."""
+
+    async def go():
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()))
+        src = LiteLLMSource("http://test/metrics", client=client)
+        await client.aclose()  # close BEFORE scraping
+        return await src.snapshot()
+
+    assert asyncio.run(go()) is None
+
+
 # ---------------------------------------------------------------------------
 # diff()
 # ---------------------------------------------------------------------------

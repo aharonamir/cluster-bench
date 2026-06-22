@@ -34,5 +34,10 @@ SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt uv sync
 (`--native-tls` alone is not enough — the existing env var shadows it.)
 
 ## Current status
-Phases 0–5 done. Phase 6 (Dockerfile + docs) next.
+Phases 0–6 done. Gate 6 green except the literal `docker build` (Docker
+daemon unavailable in this WSL distro) — the Dockerfile's uv install steps
+are statically validated against the lockfile (both mock + `--extra real`),
+and a live end-to-end smoke (server + mock LiteLLM over real HTTP) renders
+the dashboard and persists a valid report. Run `docker build -t clusterbench .`
+on a host with Docker to close the last item.
 

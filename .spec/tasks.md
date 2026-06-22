@@ -158,7 +158,7 @@ labeled; loading a 2nd saved report overlays both series.
 
 ---
 
-## Phase 6 — Packaging & docs
+## Phase 6 — Packaging & docs  ✅ done (docker build pending a Docker daemon)
 
 - **T060** `Dockerfile` + `run_server.py`; document: Docker socket mount (mini-
   swe-agent), enabling LiteLLM `callbacks:["prometheus"]` + (multi-worker)

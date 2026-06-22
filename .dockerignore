@@ -1,0 +1,30 @@
+# Keep the build context small + reproducible. The image installs deps from
+# uv.lock, so none of the local build artifacts should be copied in.
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.coverage
+htmlcov
+.vscode
+.idea
+.DS_Store
+*:Zone.Identifier
+
+# Runtime artifacts — never bake into the image (mount a volume instead).
+results/
+
+# Docs + spec aren't needed at run time.
+.spec
+README.md
+CLAUDE.md
+Dockerfile
+.dockerignore
+
+# Tests + dev-only mocks for the agent aren't part of the runtime image.
+tests/

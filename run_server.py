@@ -132,13 +132,15 @@ def build_app(args: argparse.Namespace):
             runner_root=runner_root,
         )
 
-    # Source factory always honors --metrics-url (the only wire layer).
+    # Source factory always honors --metrics-url: it's the server-level wire
+    # endpoint (the only reachable layer). The API body doesn't expose a
+    # per-run metrics URL, so config.litellm_metrics_url is always its dataclass
+    # default — the CLI flag is what the operator actually pointed at.
     def source_factory(*, config):
         from clusterbench.metrics.litellm import LiteLLMSource
 
-        metrics_url = config.litellm_metrics_url or args.metrics_url
         return LiteLLMSource(
-            metrics_url=metrics_url,
+            metrics_url=args.metrics_url,
             scrape_interval_s=config.scrape_interval_s,
         )
 

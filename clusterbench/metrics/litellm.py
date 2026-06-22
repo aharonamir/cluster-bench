@@ -174,7 +174,11 @@ class LiteLLMSource:
         try:
             resp = await self._client.get(self.metrics_url)
             resp.raise_for_status()
-        except (httpx.HTTPError, OSError):
+        except (httpx.HTTPError, OSError, RuntimeError):
+            # RuntimeError covers httpx's "client has been closed" — can happen
+            # when the in-flight poller fires after teardown. Treat like any
+            # other scrape failure: None → wire-metrics-unavailable, continue
+            # (FR-14).
             return None
         samples = parse_prometheus_text(resp.text)
         raw = self._aggregate(samples)
