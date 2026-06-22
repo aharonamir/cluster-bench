@@ -88,6 +88,11 @@ async def _seed_two_runs(tmp_path: Path) -> tuple[Any, httpx.AsyncClient]:
         results_dir=tmp_path / "results",
         runner_factory=runner_factory,
         source_factory=source_factory,
+        run_defaults={"model": "kimi-k2.6", "streaming": True,
+                      "scrape_interval_s": 0.5, "step_limit": 0},
+        server_info={"base_url": "http://litellm:4000/v1",
+                     "metrics_url": "http://litellm:4000/metrics",
+                     "path": "real", "results_dir": str(tmp_path / "results")},
     )
     async with client:
         async with httpx.AsyncClient(
@@ -156,6 +161,15 @@ def test_load_saved_report_renders_all_charts(tmp_path: Path):
                 page.on("console", lambda m: console_errors.append(m.text) if m.type == "error" else None)
                 page.on("pageerror", lambda e: console_errors.append(f"pageerror: {e}"))
                 await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+
+                # The config readout must show the server's configured model
+                # (from /api/config), not a hardcoded default.
+                await page.wait_for_function(
+                    "() => document.getElementById('rd-model')"
+                    "        .textContent === 'kimi-k2.6'"
+                )
+                rd_path = await page.eval_on_selector("#rd-path", "el => el.textContent")
+                assert rd_path == "real"
 
                 # The saved-reports <select> should list both runs.
                 sel = page.locator("#saved-select option")

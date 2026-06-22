@@ -185,6 +185,13 @@ def build_app(cfg: ServerConfig):
             "scrape_interval_s": cfg.scrape_interval_s,
             "step_limit": cfg.step_limit,
         },
+        # Non-secret wiring for the dashboard's config readout. NOT the api_key.
+        server_info={
+            "base_url": cfg.base_url,
+            "metrics_url": cfg.metrics_url,
+            "path": "real" if cfg.real else "mock",
+            "results_dir": str(results_dir),
+        },
     )
 
 

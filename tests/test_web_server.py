@@ -62,7 +62,12 @@ def _make_factories(
 
 
 def _build_test_app(
-    *, tmp_path: Path, hub: WebSocketHub | None = None, mock_app=None
+    *,
+    tmp_path: Path,
+    hub: WebSocketHub | None = None,
+    mock_app=None,
+    run_defaults=None,
+    server_info=None,
 ) -> tuple[Any, httpx.AsyncClient]:
     """Build a server app against an in-process mock_litellm. Returns
     (server_app, shared_client_for_close)."""
@@ -75,6 +80,8 @@ def _build_test_app(
         runner_factory=runner_factory,
         source_factory=source_factory,
         hub=hub,
+        run_defaults=run_defaults,
+        server_info=server_info,
     )
     return server_app, client
 
@@ -100,6 +107,51 @@ def test_health_endpoint_reports_state():
             assert data["ok"] is True
             assert data["active_run_id"] is None
             assert data["n_subscribers"] == 0
+
+    asyncio.run(go())
+
+
+def test_config_endpoint_exposes_wiring_without_api_key():
+    """The dashboard reads /api/config to show the real model + endpoints.
+    It must surface server_info + run_defaults and NEVER leak the api_key."""
+    async def go():
+        app, _ = _build_test_app(
+            tmp_path=Path("/tmp"),
+            run_defaults={"model": "qwen2.5-coder", "streaming": True,
+                          "scrape_interval_s": 0.5, "step_limit": 0},
+            server_info={"base_url": "http://litellm:4000/v1",
+                         "metrics_url": "http://litellm:4000/metrics",
+                         "path": "real", "results_dir": "/data"},
+        )
+        async with _api_client(app) as client:
+            r = await client.get("/api/config")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["run_defaults"]["model"] == "qwen2.5-coder"
+            assert data["server"]["base_url"] == "http://litellm:4000/v1"
+            assert data["server"]["path"] == "real"
+            # The api_key must never appear anywhere in the payload.
+            assert "api_key" not in data["server"]
+            assert "sk-" not in r.text
+
+    asyncio.run(go())
+
+
+def test_run_without_model_inherits_server_default(tmp_path: Path):
+    """A POST that omits `model` must use the server's configured default,
+    not a hardcoded fallback — this is the config-visibility fix."""
+    async def go():
+        app, mock_client = _build_test_app(
+            tmp_path=tmp_path,
+            run_defaults={"model": "configured-model"},
+        )
+        async with mock_client, _api_client(app) as api:
+            r = await api.post("/api/run", json={
+                "mode": "sweep", "levels": [1], "task_slice": {"n": 2},
+                "scrape_interval_s": 0.005,
+            })
+            assert r.status_code == 202
+            assert r.json()["config"]["miniswe"]["model"] == "configured-model"
 
     asyncio.run(go())
 

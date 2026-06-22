@@ -133,6 +133,7 @@ class _ServerState:
         source_factory: SourceFactory,
         hub: WebSocketHub,
         run_defaults: dict[str, Any] | None = None,
+        server_info: dict[str, Any] | None = None,
     ) -> None:
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +141,9 @@ class _ServerState:
         self.source_factory = source_factory
         self.hub = hub
         self.run_defaults = run_defaults or {}
+        # Non-secret server wiring surfaced to the dashboard via /api/config.
+        # Never holds the api_key.
+        self.server_info = server_info or {}
         self._lock = asyncio.Lock()
         self._active_run_id: str | None = None
         self._active_task: asyncio.Task[RunReport] | None = None
@@ -222,6 +226,7 @@ def create_app(
     index_html: str | None = None,
     serve_static: bool = True,
     run_defaults: dict[str, Any] | None = None,
+    server_info: dict[str, Any] | None = None,
 ) -> FastAPI:
     """Build a FastAPI app. Defaults wire the mock path; tests pass their own
     factories + hub to skip HTTP plumbing.
@@ -233,6 +238,10 @@ def create_app(
     scrape_interval_s, step_limit) used to fill any field a `POST /api/run`
     body leaves unset — so an operator configures the model once in the server
     config instead of repeating it in every run request.
+
+    `server_info` is non-secret server wiring (base_url, metrics_url, path)
+    surfaced to the dashboard via GET /api/config. It must never contain the
+    api_key.
     """
     if runner_factory is None:
         runner_factory = default_runner_factory(
@@ -250,6 +259,7 @@ def create_app(
         source_factory=source_factory,
         hub=hub,
         run_defaults=run_defaults or {},
+        server_info=server_info or {},
     )
 
     app = FastAPI(title="clusterbench")
@@ -290,6 +300,15 @@ def _register_routes(
             "ok": True,
             "active_run_id": state.active_run_id,
             "n_subscribers": state.hub.n_subscribers,
+        }
+
+    @app.get("/api/config")
+    async def config() -> dict[str, Any]:
+        """Non-secret server wiring + run defaults, for the dashboard to
+        display and prefill the controls. The api_key is never included."""
+        return {
+            "server": state.server_info,
+            "run_defaults": state.run_defaults,
         }
 
     @app.post("/api/run")

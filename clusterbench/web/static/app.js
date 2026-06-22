@@ -19,19 +19,25 @@
 
 const WILDCARD = "*"; // when no overlay runs are loaded, render the live/active run
 
-// Fixed palette for overlay runs. Index 0 is reserved for the active run.
+// Cyan→magenta heat ramp (low → high concurrency = rising heat). Mirrors the
+// --heat-* CSS vars. Index 0 (aqua) is the live/active run.
 const SERIES_COLORS = [
-  "#2563eb", "#dc2626", "#059669", "#7c3aed",
-  "#d97706", "#0891b2", "#be185d", "#65a30d",
+  "#38e0c8", "#4cc8e0", "#6aa9ef", "#9b8cf0",
+  "#d56fdc", "#ff5da2", "#ff7a6b", "#ffa64d",
 ];
 
+// Outcome colors mirror the --oc-* CSS vars.
 const OUTCOME_COLORS = {
-  resolved: "#059669",
-  unresolved: "#2563eb",
-  inference_error: "#d97706",
-  agent_error: "#dc2626",
-  timeout: "#7c3aed",
+  resolved: "#38e0c8",
+  unresolved: "#6aa9ef",
+  inference_error: "#ffb454",
+  agent_error: "#ff5277",
+  timeout: "#d56fdc",
 };
+
+// The aqua signal + hot-pink knee, read from CSS so JS and CSS never drift.
+const OVERHEAD_COLOR = "#d56fdc"; // the proc-overhead line on the LiteLLM panel
+const AXIS_TICK_SIZE = 10;
 
 const OUTCOME_ORDER = ["resolved", "unresolved", "inference_error", "agent_error", "timeout"];
 
@@ -51,6 +57,8 @@ const state = {
   events: [],
   // Connection state: "connecting" | "connected" | "disconnected".
   wsState: "disconnected",
+  // Server wiring + run defaults from /api/config (model, endpoints, path).
+  serverConfig: null,
 };
 
 let _ws = null;
@@ -104,7 +112,8 @@ function setWsState(s) {
   if (!el) return;
   el.classList.remove("connected", "disconnected", "connecting");
   el.classList.add(s);
-  el.querySelector(".label").textContent = s;
+  const labels = { connected: "live", connecting: "linking", disconnected: "offline" };
+  el.querySelector(".label").textContent = labels[s] || s;
 }
 
 // ---------------------------------------------------------------------
@@ -228,8 +237,74 @@ function pushEvent(type, payload) {
 }
 
 // ---------------------------------------------------------------------
-// Transport: fetch (saved reports + start run)
+// Transport: fetch (config + saved reports + start run)
 // ---------------------------------------------------------------------
+
+async function loadConfig() {
+  // Pull the server's actual wiring so the readout + controls reflect reality
+  // (the model the operator set in config.yaml, not a hardcoded default).
+  try {
+    const r = await fetch("/api/config");
+    if (!r.ok) return;
+    state.serverConfig = await r.json();
+  } catch (e) {
+    /* leave readout as placeholders */
+  }
+  renderConfigReadout();
+  prefillControlsFromConfig();
+}
+
+function _setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+/** Trim a URL to host[+path tail] so the readout stays compact. */
+function _shortUrl(url) {
+  if (!url) return "—";
+  try {
+    const u = new URL(url);
+    const tail = u.pathname.replace(/\/$/, "");
+    return u.host + (tail && tail !== "" ? tail : "");
+  } catch (e) {
+    return url;
+  }
+}
+
+function renderConfigReadout() {
+  const cfg = state.serverConfig;
+  const server = (cfg && cfg.server) || {};
+  const defaults = (cfg && cfg.run_defaults) || {};
+
+  _setText("rd-base", _shortUrl(server.base_url));
+  _setText("rd-model", defaults.model || "—");
+  _setText("rd-metrics", _shortUrl(server.metrics_url));
+  _setText("rd-scrape",
+    defaults.scrape_interval_s != null ? `${defaults.scrape_interval_s}s` : "—");
+  _setText("rd-streaming", defaults.streaming === false ? "off" : "on");
+
+  const pathEl = document.getElementById("rd-path");
+  if (pathEl) {
+    const path = server.path || "—";
+    pathEl.textContent = path;
+    pathEl.className = "v " + (path === "real" ? "path-real" : "path-mock");
+  }
+}
+
+/** Prefill the controls with the server defaults so a submitted run inherits
+ *  the configured model unless the operator deliberately changes it. */
+function prefillControlsFromConfig() {
+  const defaults = (state.serverConfig && state.serverConfig.run_defaults) || {};
+  const form = document.getElementById("start-form");
+  if (!form) return;
+  if (defaults.model && !form.model.value) form.model.value = defaults.model;
+  if (defaults.scrape_interval_s != null) {
+    form.scrape_interval_s.value = defaults.scrape_interval_s;
+  }
+  if (typeof defaults.streaming === "boolean") {
+    form.streaming.checked = defaults.streaming;
+  }
+}
 
 async function refreshSavedList() {
   const sel = document.getElementById("saved-select");
@@ -321,17 +396,22 @@ function buildStartBody() {
   if (Number.isFinite(gMinPass)) guards.min_pass_rate = gMinPass;
   if (Number.isFinite(gMaxInFlight)) guards.max_in_flight_peak = gMaxInFlight;
 
-  return {
+  // model is left out of the body when blank, so the server fills it from its
+  // configured default (config.yaml) — never hardcode a model here.
+  const modelField = (fd.get("model") || "").toString().trim();
+
+  const body = {
     name: (fd.get("name") || "").toString().trim(),
     mode,
     levels: mode === "soak" ? [levels[0] || 1] : levels,
     soak_duration_s: parseFloat(fd.get("soak_duration_s")) || 1800,
     task_slice: { n: parseInt(fd.get("n"), 10) || 5 },
     scrape_interval_s: parseFloat(fd.get("scrape_interval_s")) || 1,
-    model: (fd.get("model") || "gpt-4o-mini").toString(),
     streaming: fd.get("streaming") === "on",
     guards,
   };
+  if (modelField) body.model = modelField;
+  return body;
 }
 
 async function startRun(ev) {
@@ -339,6 +419,7 @@ async function startRun(ev) {
   const btn = document.getElementById("start-btn");
   const status = document.getElementById("start-status");
   btn.disabled = true;
+  status.className = "";
   status.textContent = "submitting…";
   try {
     const body = buildStartBody();
@@ -349,16 +430,20 @@ async function startRun(ev) {
     });
     if (r.status === 202) {
       const data = await r.json();
-      status.textContent = `started ${data.run_id}`;
+      status.className = "ok";
+      status.textContent = `▸ started ${data.run_id}`;
       // Reset the active run view in case there's stale state from a prior run.
       state.activeRun = null;
     } else if (r.status === 409) {
       const data = await r.json();
-      status.textContent = `busy — run ${data.detail.active_run_id} is active`;
+      status.className = "busy";
+      status.textContent = `busy — run ${data.detail.active_run_id} active`;
     } else {
+      status.className = "err";
       status.textContent = `error: HTTP ${r.status}`;
     }
   } catch (e) {
+    status.className = "err";
     status.textContent = `error: ${e.message}`;
   } finally {
     btn.disabled = false;
@@ -498,23 +583,24 @@ const PADDING = { top: 12, right: 16, bottom: 28, left: 48 };
 
 function drawAxes(svg, opts) {
   // opts: {xScale, yScale, xTicks, yTicks, xLabel, yLabel, width, height,
-  //        xFormat, yFormat}
+  //        xFormat, yFormat}. Colors come from CSS classes (cb-*), so the
+  //        chart theme lives in styles.css, not here.
   const w = opts.width, h = opts.height;
   const xFormat = opts.xFormat || ((v) => v);
   const yFormat = opts.yFormat || ((v) => v);
-  const axisColor = "#999";
 
   // Y axis ticks + gridlines.
   for (const tv of opts.yTicks) {
     const y = opts.yScale(tv);
     svg.appendChild(svgEl("line", {
+      class: "cb-grid",
       x1: PADDING.left, x2: w - PADDING.right,
       y1: y, y2: y,
-      stroke: "#eee", "stroke-width": 1,
     }));
     const lbl = svgEl("text", {
+      class: "cb-tick",
       x: PADDING.left - 6, y: y + 3,
-      "text-anchor": "end", "font-size": 10, fill: axisColor,
+      "text-anchor": "end",
     });
     lbl.textContent = yFormat(tv);
     svg.appendChild(lbl);
@@ -522,8 +608,9 @@ function drawAxes(svg, opts) {
   // Y axis label.
   if (opts.yLabel) {
     const t = svgEl("text", {
+      class: "cb-axis-label",
       x: 12, y: h / 2,
-      "text-anchor": "middle", "font-size": 10, fill: axisColor,
+      "text-anchor": "middle", "font-size": 10,
       transform: `rotate(-90 12 ${h / 2})`,
     });
     t.textContent = opts.yLabel;
@@ -533,35 +620,37 @@ function drawAxes(svg, opts) {
   for (const tv of opts.xTicks) {
     const x = opts.xScale(tv);
     svg.appendChild(svgEl("line", {
+      class: "cb-axis",
       x1: x, x2: x,
       y1: h - PADDING.bottom, y2: h - PADDING.bottom + 4,
-      stroke: axisColor, "stroke-width": 1,
     }));
     const lbl = svgEl("text", {
+      class: "cb-tick",
       x: x, y: h - PADDING.bottom + 16,
-      "text-anchor": "middle", "font-size": 10, fill: axisColor,
+      "text-anchor": "middle",
     });
     lbl.textContent = xFormat(tv);
     svg.appendChild(lbl);
   }
   if (opts.xLabel) {
     const t = svgEl("text", {
+      class: "cb-axis-label",
       x: (w + PADDING.left - PADDING.right) / 2, y: h - 4,
-      "text-anchor": "middle", "font-size": 10, fill: axisColor,
+      "text-anchor": "middle", "font-size": 10,
     });
     t.textContent = opts.xLabel;
     svg.appendChild(t);
   }
   // Axis baselines.
   svg.appendChild(svgEl("line", {
+    class: "cb-axis",
     x1: PADDING.left, x2: w - PADDING.right,
     y1: h - PADDING.bottom, y2: h - PADDING.bottom,
-    stroke: axisColor, "stroke-width": 1,
   }));
   svg.appendChild(svgEl("line", {
+    class: "cb-axis",
     x1: PADDING.left, x2: PADDING.left,
     y1: PADDING.top, y2: h - PADDING.bottom,
-    stroke: axisColor, "stroke-width": 1,
   }));
 }
 
@@ -612,30 +701,31 @@ function drawSeriesChart(svg, { width, height }, runs, accessor, opts = {}) {
     if (pts.length > 1) {
       const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
       svg.appendChild(svgEl("path", {
-        d, fill: "none", stroke: run.color, "stroke-width": 1.75,
+        d, fill: "none", stroke: run.color, "stroke-width": 2,
         "stroke-linejoin": "round", "stroke-linecap": "round",
       }));
     }
     for (const p of pts) {
       svg.appendChild(svgEl("circle", {
         cx: p.x, cy: p.y, r: 3.5,
-        fill: run.color, stroke: "#fff", "stroke-width": 1,
+        fill: run.color, stroke: "var(--surface-1)", "stroke-width": 1.5,
       }));
     }
-    // Knee marker.
+    // Knee marker — always the knee color, regardless of the run's series hue,
+    // so "where it bent" reads consistently across overlaid runs.
     if (opts.showKnee && run.knee) {
       const kneeLv = run.levels.find((lv) => lv.level === run.knee.level);
       if (kneeLv && accessor(kneeLv) !== null) {
         const kx = xScale(run.knee.level);
         const ky = yScale(accessor(kneeLv));
         svg.appendChild(svgEl("line", {
+          class: "cb-knee-line",
           x1: kx, x2: kx,
           y1: PADDING.top, y2: height - PADDING.bottom,
-          stroke: run.color, "stroke-width": 1, "stroke-dasharray": "4 3", opacity: 0.5,
         }));
         svg.appendChild(svgEl("circle", {
+          class: "cb-knee-ring",
           cx: kx, cy: ky, r: 6,
-          fill: "none", stroke: run.color, "stroke-width": 2,
         }));
       }
     }
@@ -644,8 +734,9 @@ function drawSeriesChart(svg, { width, height }, runs, accessor, opts = {}) {
 
 function drawEmptyState(svg, width, height, msg) {
   const t = svgEl("text", {
+    class: "cb-empty",
     x: width / 2, y: height / 2,
-    "text-anchor": "middle", "font-size": 12, fill: "#999",
+    "text-anchor": "middle", "font-size": 12,
   });
   t.textContent = msg;
   svg.appendChild(t);
@@ -689,14 +780,15 @@ function drawLitellmPanel(svg, { width, height }, runs) {
     yFormat: (v) => fmt(v, 0),
     width, height,
   });
-  // Right axis for overhead.
+  // Right axis for overhead (colored to match the overhead line).
   const ohTicks = niceTicks([0, (overheadDomain[1] || 0.001) * 1.2]);
   for (const tv of ohTicks) {
     const y = overheadScale(tv);
     if (y < PADDING.top - 2 || y > height - PADDING.bottom + 2) continue;
     const lbl = svgEl("text", {
       x: width - PADDING.right + 6, y: y + 3,
-      "text-anchor": "start", "font-size": 10, fill: "#7c3aed",
+      "text-anchor": "start", "font-size": 10, fill: OVERHEAD_COLOR,
+      "font-family": "var(--mono)",
     });
     lbl.textContent = fmt(tv, 3);
     svg.appendChild(lbl);
@@ -722,14 +814,14 @@ function drawLitellmPanel(svg, { width, height }, runs) {
     if (pts.length > 1) {
       const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
       svg.appendChild(svgEl("path", {
-        d, fill: "none", stroke: "#7c3aed", "stroke-width": 1.75,
-        "stroke-linejoin": "round",
+        d, fill: "none", stroke: OVERHEAD_COLOR, "stroke-width": 2,
+        "stroke-linejoin": "round", "stroke-dasharray": "5 3",
       }));
     }
     for (const p of pts) {
       svg.appendChild(svgEl("circle", {
         cx: p.x, cy: p.y, r: 3,
-        fill: "#7c3aed", stroke: "#fff", "stroke-width": 1,
+        fill: OVERHEAD_COLOR, stroke: "var(--surface-1)", "stroke-width": 1.5,
       }));
     }
   }
@@ -830,7 +922,8 @@ function drawTaxonomy(svg, { width, height }, runs) {
       fill: OUTCOME_COLORS[oc], opacity: 0.85,
     }));
     const t = svgEl("text", {
-      x: lx + 14, y: ly + 9, "font-size": 10, fill: "#333",
+      class: "cb-tick",
+      x: lx + 14, y: ly + 9, "font-size": 10,
     });
     t.textContent = oc;
     svg.appendChild(t);
@@ -911,7 +1004,8 @@ function renderEventFeed() {
   const recent = state.events.slice(-MAX_EVENTS).reverse();
   for (const ev of recent) {
     const row = document.createElement("div");
-    row.className = "event";
+    // ev-<type> drives the per-event-type hue (see styles.css).
+    row.className = `event ev-${ev.type}`;
     const t = document.createElement("span");
     t.className = "t"; t.textContent = ev.t;
     const ty = document.createElement("span");
@@ -937,18 +1031,23 @@ function renderActiveRunMeta() {
   const r = state.activeRun;
   el.innerHTML = "";
   const fields = [
-    ["run_id", r.run_id],
-    ["name", r.name || "—"],
-    ["mode", r.mode],
-    ["levels", (r.levels || []).join(", ")],
-    ["pinned", `${(r.pinned_instance_ids || []).length} instances`],
-    ["levels done", `${(r.levels_data || []).length} / ${(r.levels || []).length}`],
-    ["knee", r.knee ? `level ${r.knee.level} (${r.knee.reason})` : "—"],
+    ["run", r.run_id, false],
+    ["name", r.name || "—", false],
+    ["mode", r.mode, false],
+    ["levels", (r.levels || []).join(", "), false],
+    ["pinned", `${(r.pinned_instance_ids || []).length}`, false],
+    ["done", `${(r.levels_data || []).length}/${(r.levels || []).length}`, false],
+    ["knee", r.knee ? `L${r.knee.level} · ${r.knee.reason}` : "—", !!r.knee],
   ];
-  for (const [k, v] of fields) {
-    const div = document.createElement("div");
-    div.innerHTML = `<strong>${k}:</strong> ${v}`;
-    el.appendChild(div);
+  for (const [k, v, isKnee] of fields) {
+    const chip = document.createElement("span");
+    chip.className = isKnee ? "meta knee" : "meta";
+    const kEl = document.createElement("span");
+    kEl.className = "k"; kEl.textContent = k;
+    const vEl = document.createElement("span");
+    vEl.className = "v"; vEl.textContent = v;
+    chip.appendChild(kEl); chip.appendChild(vEl);
+    el.appendChild(chip);
   }
 }
 
@@ -979,16 +1078,15 @@ function renderQueueAnnotation(flags) {
   const el = document.getElementById("queue-annotation");
   if (!el) return;
   if (!flags) {
-    el.textContent = "queue-time metric: heuristic shows no pre-handler bottleneck";
-    el.className = "annotation muted";
+    el.textContent = "heuristic: no pre-handler bottleneck detected";
+    el.className = "annotation";
     return;
   }
   const parts = flags.map(
-    (f) => `${f.run_id} level ${f.level} (p99=${f.lat.toFixed(2)}s, in-flight=${f.inf.toFixed(1)})`
+    (f) => `${f.run_id} L${f.level} (p99=${f.lat.toFixed(2)}s, in-flight=${f.inf.toFixed(1)})`
   );
-  el.textContent = `⚠ pre-handler queueing heuristic: ${parts.join("; ")} (LiteLLM can't see pre-ASGI wait; not GPU causation)`;
-  el.className = "annotation";
-  el.style.color = "var(--warning)";
+  el.textContent = `⚠ pre-handler queueing heuristic: ${parts.join("; ")} — LiteLLM can't see pre-ASGI wait; not GPU causation`;
+  el.className = "annotation flagged";
 }
 
 function renderTtftHint() {
@@ -1073,6 +1171,7 @@ function wire() {
   const refreshBtn = document.getElementById("refresh-btn");
   if (refreshBtn) refreshBtn.addEventListener("click", refreshSavedList);
 
+  loadConfig();
   refreshSavedList();
   connect();
   renderAll();
