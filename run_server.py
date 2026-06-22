@@ -1,12 +1,23 @@
 """uvicorn entrypoint for the ClusterBench server.
 
-Defaults to the mock path: expects mock_litellm at --base-url (default
-http://localhost:4000/v1). For a real cluster, swap --mock for --real once the
-real runner is wired (Phase 6 wires MiniSweRunner behind a flag).
+Two paths:
 
-Run with:
-  uv run python run_server.py
-  uv run python run_server.py --port 8000 --base-url http://localhost:4000/v1
+  mock path (default)
+      Drives an in-process mock_litellm via MockRunner. No GPU, Docker, or
+      downloads — what CI and the dev loop use.
+
+      uv run python run_server.py
+
+  real path (--real)
+      Drives mini-swe-agent's `mini-extra swebench` subprocess per level,
+      pointing the agents' OpenAI client at a real LiteLLM at --base-url.
+      Requires the `real` extra (`uv sync --extra real`) and Docker (the
+      per-task containers mini-swe-agent spawns need the daemon).
+
+      uv run python run_server.py --real --base-url http://litellm:4000/v1
+
+Both paths scrape the same /metrics endpoint (--metrics-url) for wire-level
+deltas; only the runner differs.
 """
 from __future__ import annotations
 
@@ -40,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--base-url",
         default="http://localhost:4000/v1",
-        help="OpenAI-style base URL mini-swe-agent's tasks hit (mock_litellm).",
+        help="OpenAI-style base URL (mock_litellm by default; LiteLLM on real path).",
     )
     p.add_argument(
         "--metrics-url",
@@ -50,7 +61,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--real",
         action="store_true",
-        help="Wire the real MiniSweRunner (default: mock path).",
+        help="Wire the real MiniSweRunner (requires --extra real + Docker).",
+    )
+    p.add_argument(
+        "--api-key",
+        default="sk-mock",
+        help="API key mini-swe-agent passes to LiteLLM (default sk-mock).",
+    )
+    p.add_argument(
+        "--step-limit",
+        type=int,
+        default=0,
+        help="Per-task step limit for mini-swe-agent (0 = unlimited).",
+    )
+    p.add_argument(
+        "--runner-root",
+        default=None,
+        help="Root directory for per-level out_dir (default <results>/miniswe).",
     )
     p.add_argument(
         "--log-level",
@@ -60,33 +87,61 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _real_runner_factory(
+    *, base_url: str, api_key: str, step_limit: int, runner_root: Path
+):
+    """Build a RunnerFactory that drives mini-swe-agent per level."""
+    try:
+        from clusterbench.miniswerunner import MiniSweRunner
+    except ImportError as exc:
+        raise SystemExit(
+            "real path needs mini-swe-agent; install with `uv sync --extra real`"
+        ) from exc
+
+    def make(*, config, pinned):
+        return MiniSweRunner(
+            model=config.miniswe.model,
+            base_url=base_url,
+            instance_ids=pinned,
+            subset=config.task_slice.subset,
+            split=config.task_slice.split,
+            step_limit=step_limit or config.miniswe.step_limit,
+            streaming=config.miniswe.streaming,
+            api_key=api_key,
+            runner_root=runner_root,
+        )
+
+    return make
+
+
 def build_app(args: argparse.Namespace):
     """Build the FastAPI app from CLI args. Hook for run_server.py + tests."""
-    if args.real:
-        # Phase 6 will wire the real runner factory behind this flag.
-        raise NotImplementedError(
-            "real path not wired yet; use the default mock path"
-        )
     results_dir = Path(args.results_dir)
-    runner_factory = default_runner_factory(
-        base_url=args.base_url,
-        runner_root=results_dir / "miniswe",
-    )
+    runner_root = Path(args.runner_root) if args.runner_root else results_dir / "miniswe"
 
-    # Override the default source factory to honor --metrics-url.
+    if args.real:
+        runner_factory = _real_runner_factory(
+            base_url=args.base_url,
+            api_key=args.api_key,
+            step_limit=args.step_limit,
+            runner_root=runner_root,
+        )
+    else:
+        runner_factory = default_runner_factory(
+            base_url=args.base_url,
+            runner_root=runner_root,
+        )
+
+    # Source factory always honors --metrics-url (the only wire layer).
     def source_factory(*, config):
         from clusterbench.metrics.litellm import LiteLLMSource
 
-        # Prefer the per-run config URL, fall back to the CLI flag.
         metrics_url = config.litellm_metrics_url or args.metrics_url
         return LiteLLMSource(
             metrics_url=metrics_url,
             scrape_interval_s=config.scrape_interval_s,
         )
 
-    # Pre-fill the default metrics URL by mutating the runner config when the
-    # client omits it — but since the client can override per run, we do this
-    # in the source factory above.
     return create_app(
         results_dir=results_dir,
         runner_factory=runner_factory,
