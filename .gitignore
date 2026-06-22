@@ -25,3 +25,7 @@ htmlcov/
 # Persisted run reports are runtime artifacts, not source.
 results/*
 !results/.gitkeep
+
+# Local server config — may hold a real api_key + internal hostnames.
+# The committed template is config.example.yaml; copy it to config.yaml.
+config.yaml
