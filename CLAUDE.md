@@ -34,10 +34,10 @@ SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt uv sync
 (`--native-tls` alone is not enough — the existing env var shadows it.)
 
 ## Current status
-Phases 0–6 done. Gate 6 green except the literal `docker build` (Docker
-daemon unavailable in this WSL distro) — the Dockerfile's uv install steps
-are statically validated against the lockfile (both mock + `--extra real`),
-and a live end-to-end smoke (server + mock LiteLLM over real HTTP) renders
-the dashboard and persists a valid report. Run `docker build -t clusterbench .`
-on a host with Docker to close the last item.
+Phases 0–6 done. **Gate 6 fully green**, including the literal `docker build`:
+both images build (`clusterbench` mock, 344MB; `clusterbench:real` with
+mini-swe-agent + swebench, 1.06GB). The mock image serves the dashboard +
+static assets and runs a full self-contained sweep end-to-end (mock LiteLLM
+started inside the container, real HTTP, report persisted to /app/results);
+the real image's mini-swe-agent + swebench imports verified.
 
