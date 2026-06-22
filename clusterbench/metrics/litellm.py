@@ -342,6 +342,68 @@ def _histogram_delta(
     return {edge: int(e.get(edge, 0)) - int(s.get(edge, 0)) for edge in edges}
 
 
+def compute_live_stats(
+    start: "ScrapeSnapshot",
+    current: "ScrapeSnapshot",
+    elapsed_s: float,
+    level: int,
+) -> dict[str, Any]:
+    """Lightweight live-stats snapshot for the polling loop.
+
+    Returns a dict suitable for a `level_live` WebSocket event. All fields
+    are present; optional ones (ttft_p50, tpot_ms) are None when the TTFT
+    series is unavailable (streaming off) or insufficient data.
+
+    TPOT = (avg_latency − avg_TTFT) / avg_output_tokens: rises when the GPU
+    is saturated (batch throughput degrades). TTFT rises when queueing before
+    generation starts. Together they pinpoint where the saturation is.
+    """
+    from clusterbench.metrics.base import percentile_at_bucket_edge
+
+    in_flight = float(current.raw.get(SERIES_IN_FLIGHT, 0) or 0)
+
+    total_tok_delta = _counter_delta(start, current, SERIES_TOTAL_TOKENS)
+    throughput_tps = max(0.0, total_tok_delta) / elapsed_s if elapsed_s > 0 else 0.0
+
+    lat_buckets = _histogram_delta(start, current, SERIES_LATENCY_E2E)
+    lat_p50 = percentile_at_bucket_edge(lat_buckets, 0.50)
+
+    ttft_p50: float | None = None
+    tpot_ms: float | None = None
+
+    if SERIES_TTFT in start.raw and SERIES_TTFT in current.raw:
+        ttft_buckets = _histogram_delta(start, current, SERIES_TTFT)
+        ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
+
+        # TPOT from histogram sums (more accurate than percentile subtraction).
+        lat_s = start.raw.get(SERIES_LATENCY_E2E, {})
+        lat_e = current.raw.get(SERIES_LATENCY_E2E, {})
+        ttft_s = start.raw.get(SERIES_TTFT, {})
+        ttft_e = current.raw.get(SERIES_TTFT, {})
+        lat_count = (lat_e.get("count", 0) - lat_s.get("count", 0))
+        lat_sum = (lat_e.get("sum", 0.0) - lat_s.get("sum", 0.0))
+        ttft_count = (ttft_e.get("count", 0) - ttft_s.get("count", 0))
+        ttft_sum = (ttft_e.get("sum", 0.0) - ttft_s.get("sum", 0.0))
+        out_tok = _counter_delta(start, current, SERIES_OUTPUT_TOKENS)
+
+        if lat_count > 0 and ttft_count > 0 and out_tok > lat_count:
+            avg_lat = lat_sum / lat_count
+            avg_ttft = ttft_sum / ttft_count
+            avg_out_tok = out_tok / lat_count
+            gen_s = max(0.0, avg_lat - avg_ttft)
+            tpot_ms = gen_s / avg_out_tok * 1000.0
+
+    return {
+        "level": level,
+        "elapsed_s": round(elapsed_s, 1),
+        "in_flight": in_flight,
+        "throughput_tps": round(throughput_tps, 1),
+        "lat_p50": lat_p50,
+        "ttft_p50": ttft_p50,
+        "tpot_ms": round(tpot_ms, 1) if tpot_ms is not None else None,
+    }
+
+
 def _count_failed_from_status(requests_delta: dict[str, float]) -> float:
     """Backstop: count any non-2xx status code as failed. Used when the direct
     failed-request counter is absent (e.g. mock without SERIES_FAILED_REQUESTS)."""

@@ -380,13 +380,13 @@ def _register_routes(
     async def start_run(body: StartRunBody) -> JSONResponse:
         run_id = uuid.uuid4().hex[:12]
         config = _build_run_config(run_id, body, state.run_defaults)
-        pinned = _resolve_pinned(config, real=state.real)
-        await state.try_start(config, pinned=pinned)
+        pool = _build_pool(config, real=state.real)
+        await state.try_start(config, pinned=pool)
         return JSONResponse(
             status_code=202,
             content={
                 "run_id": run_id,
-                "pinned_instance_ids": pinned,
+                "pinned_instance_ids": pool,
                 "config": config.to_dict(),
             },
         )
@@ -490,12 +490,12 @@ def _build_run_config(
     )
 
 
-def _resolve_pinned(config: RunConfig, *, real: bool = False) -> list[str]:
-    """Pin the slice once. Reused at every level (AC-10).
+def _build_pool(config: RunConfig, *, real: bool = False) -> list[str]:
+    """Build the instance ID pool that the runner samples from per level.
 
-    In mock mode (default), returns synthetic IDs so no dataset download is
-    needed. In real mode, loads instance IDs from the SWE-bench dataset via
-    datasets (requires the `real` extra).
+    Mock mode: n synthetic IDs — MockRunner uses all of them at every level.
+    Real mode: all available dataset IDs — MiniSweRunner samples n_per_worker×level
+    per call so each level sees a different workload (avoids KV-cache reuse).
     """
     from clusterbench.miniswerunner import pin_slice
 
@@ -510,7 +510,7 @@ def _resolve_pinned(config: RunConfig, *, real: bool = False) -> list[str]:
             mock=True,
         )
 
-    # Real path: load from the SWE-bench Verified dataset.
+    # Real path: load the full dataset so MiniSweRunner can sample per level.
     try:
         from datasets import load_dataset  # type: ignore[import]
     except ImportError as exc:
@@ -518,17 +518,8 @@ def _resolve_pinned(config: RunConfig, *, real: bool = False) -> list[str]:
             "real path needs the `datasets` package; install with `uv sync --extra real`"
         ) from exc
 
-    def _loader(*, subset: str, split: str) -> list[str]:
-        ds = load_dataset("princeton-nlp/SWE-bench_Verified", split=split)
-        return [row["instance_id"] for row in ds]
-
-    return pin_slice(
-        n=config.task_slice.n,
-        subset=config.task_slice.subset,
-        split=config.task_slice.split,
-        mock=False,
-        dataset_loader=_loader,
-    )
+    ds = load_dataset("princeton-nlp/SWE-bench_Verified", split=config.task_slice.split)
+    return [row["instance_id"] for row in ds]
 
 
 # ---------------------------------------------------------------------------

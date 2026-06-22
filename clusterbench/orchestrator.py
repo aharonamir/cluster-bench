@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from clusterbench.metrics.base import MetricsSource
-from clusterbench.metrics.litellm import SERIES_IN_FLIGHT
+from clusterbench.metrics.litellm import SERIES_IN_FLIGHT, compute_live_stats
 from clusterbench.miniswerunner import Runner, pin_slice
 from clusterbench.models import (
     LevelRunResult,
@@ -145,6 +145,11 @@ class Orchestrator:
             raise RuntimeError("orchestrator already running")
         self._active = True
         self._ttft_available_seen = False
+        # Accumulate summaries here so a cancellation can save a partial report.
+        self._completed_summaries: list[LevelSummary] = []
+        self._completed_knee: dict[str, Any] | None = None
+        cancelled = False
+        pinned: list[str] = list(self.config.task_slice.pinned_instance_ids)
         try:
             pinned = self._resolve_pinned()
             await self.emitter.emit(
@@ -164,25 +169,39 @@ class Orchestrator:
             else:
                 summaries = await self._soak(pinned)
 
-            wire_available = any(s.delta is not None for s in summaries)
-            report = RunReport(
-                run_id=self.config.run_id,
-                name=self.config.name,
-                config=self.config,
-                wire_metrics_available=wire_available,
-                ttft_available=self._ttft_available_seen,
-                levels=summaries,
-                knee=knee,
-                pinned_instance_ids=list(pinned),
-                finished_at=datetime.now(timezone.utc).isoformat(),
-            )
-            await self.emitter.emit(
-                "run_done",
-                {"run_id": self.config.run_id, "knee": knee, "n_levels": len(summaries)},
-            )
-            return report
+        except asyncio.CancelledError:
+            # Build a partial report from whichever levels finished before the
+            # cancel arrived. Returning normally (not re-raising) lets _drive
+            # reach save_report so the partial data isn't lost.
+            summaries = list(self._completed_summaries)
+            knee = self._completed_knee
+            cancelled = True
+
         finally:
             self._active = False
+
+        wire_available = any(s.delta is not None for s in summaries)
+        report = RunReport(
+            run_id=self.config.run_id,
+            name=self.config.name,
+            config=self.config,
+            wire_metrics_available=wire_available,
+            ttft_available=self._ttft_available_seen,
+            levels=summaries,
+            knee=knee,
+            pinned_instance_ids=list(pinned),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await self.emitter.emit(
+            "run_done",
+            {
+                "run_id": self.config.run_id,
+                "knee": knee,
+                "n_levels": len(summaries),
+                "cancelled": cancelled,
+            },
+        )
+        return report
 
     # ------------------------------------------------------------------
     # Pinned slice
@@ -210,11 +229,13 @@ class Orchestrator:
         for level in self.config.levels:
             summary = await self._run_level(level, pinned)
             summaries.append(summary)
+            self._completed_summaries.append(summary)
             await self.emitter.emit("level_done", summary.to_dict())
             if knee is None:
                 reason = self._eval_guards(summary)
                 if reason is not None:
                     knee = {"level": level, "reason": reason}
+                    self._completed_knee = knee
                     await self.emitter.emit("knee", knee)
         return summaries, knee
 
@@ -242,6 +263,7 @@ class Orchestrator:
                 break
             summary = await self._run_level(level, pinned, bin_idx=bin_idx)
             summaries.append(summary)
+            self._completed_summaries.append(summary)
             await self.emitter.emit("level_done", summary.to_dict())
             bin_idx += 1
         return summaries
@@ -274,7 +296,7 @@ class Orchestrator:
             )
 
         t0 = self._clock()
-        result, peak = await self._run_with_inflight_polling(level)
+        result, peak = await self._run_with_inflight_polling(level, start_snap=start_snap)
         duration = self._clock() - t0
 
         end_snap = await self.source.snapshot()
@@ -332,11 +354,18 @@ class Orchestrator:
         )
 
     async def _run_with_inflight_polling(
-        self, level: int
+        self,
+        level: int,
+        *,
+        start_snap: Any | None = None,
     ) -> tuple[LevelRunResult, float]:
-        """Run the batch while polling the source on the scrape interval for
-        litellm_in_flight_requests; track the peak (FR-11)."""
+        """Run the batch while polling the source on the scrape interval.
+
+        Tracks in-flight peak (FR-11) and emits `level_live` events so the
+        dashboard can show TTFT, latency, tok/s, and TPOT while the level runs.
+        """
         peak: float = 0.0
+        t_start = self._clock()
 
         async def poll() -> None:
             nonlocal peak
@@ -348,6 +377,10 @@ class Orchestrator:
                 current = snap.raw.get(SERIES_IN_FLIGHT, 0)
                 if isinstance(current, (int, float)) and current > peak:
                     peak = current
+                if start_snap is not None:
+                    elapsed = self._clock() - t_start
+                    live = compute_live_stats(start_snap, snap, elapsed, level)
+                    await self.emitter.emit("level_live", live)
 
         poll_task = asyncio.create_task(poll())
         try:

@@ -96,6 +96,13 @@
       </div>
     </div>
     <div id="active-run-meta"></div>
+    <div id="live-gauges" class="live-gauges hidden">
+      <div class="gauge-cell"><span class="gauge-k">in-flight</span><span class="gauge-v" id="g-inflight">—</span></div>
+      <div class="gauge-cell"><span class="gauge-k">tok/s</span><span class="gauge-v accent" id="g-tps">—</span></div>
+      <div class="gauge-cell"><span class="gauge-k">TTFT p50</span><span class="gauge-v" id="g-ttft">—</span></div>
+      <div class="gauge-cell"><span class="gauge-k">lat p50</span><span class="gauge-v" id="g-lat">—</span></div>
+      <div class="gauge-cell" title="Time Per Output Token = (avg latency − avg TTFT) / avg output tokens. Rises when GPU is saturated."><span class="gauge-k">TPOT</span><span class="gauge-v" id="g-tpot">—</span></div>
+    </div>
   </section>
 
   <!-- ================= Charts (tabbed) ================= -->

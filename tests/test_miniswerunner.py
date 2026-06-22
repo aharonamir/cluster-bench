@@ -414,7 +414,8 @@ def test_mock_runner_conforms_to_protocol():
     runner = MiniSweRunner(
         model="m",
         base_url="http://test/v1",
-        instance_ids=["x"],
+        pool=["x", "y", "z"],
+        n_per_worker=1,
     )
     assert isinstance(runner, Runner)
 

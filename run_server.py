@@ -134,7 +134,8 @@ def _real_runner_factory(
         return MiniSweRunner(
             model=config.miniswe.model,
             base_url=base_url,
-            instance_ids=pinned,
+            pool=pinned,
+            n_per_worker=config.task_slice.n,
             subset=config.task_slice.subset,
             split=config.task_slice.split,
             step_limit=step_limit or config.miniswe.step_limit,

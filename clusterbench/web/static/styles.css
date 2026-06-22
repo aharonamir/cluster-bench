@@ -589,6 +589,42 @@ button.hidden { display: none; }
 #active-run-meta .meta.knee .v { color: var(--knee); }
 
 /* ===================================================================== */
+/* Live gauges (level_live events during an active run)                  */
+/* ===================================================================== */
+
+.live-gauges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.4rem;
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line-soft);
+  font-family: var(--mono);
+}
+.live-gauges.hidden { display: none; }
+
+.gauge-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  min-width: 5rem;
+}
+.gauge-k {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-mute);
+}
+.gauge-v {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.gauge-v.accent { color: var(--live); }
+
+/* ===================================================================== */
 /* Per-level table                                                       */
 /* ===================================================================== */
 

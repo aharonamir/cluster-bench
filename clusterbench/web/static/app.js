@@ -147,6 +147,7 @@ function onEvent(type, payload) {
       state.runInProgress = false;
       setRunInProgress(false);
       stopElapsedTimer();
+      { const g = document.getElementById("live-gauges"); if (g) g.classList.add("hidden"); }
       // After a run finishes, refresh the saved-reports list so it appears.
       refreshSavedList();
       break;
@@ -188,6 +189,12 @@ function onEvent(type, payload) {
         state.activeRun.knee = { level: payload.level, reason: payload.reason };
       }
       break;
+    case "level_live":
+      if (state.activeRun) {
+        state.activeRun.liveStats = payload;
+        renderLiveGauges(payload);
+      }
+      return; // skip full renderAll — gauges update independently
   }
   renderAll();
 }
@@ -1124,6 +1131,34 @@ function renderActiveRunMeta() {
     chip.appendChild(kEl); chip.appendChild(vEl);
     el.appendChild(chip);
   }
+}
+
+function renderLiveGauges(stats) {
+  const wrap = document.getElementById("live-gauges");
+  if (!wrap) return;
+  wrap.classList.remove("hidden");
+
+  function set(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text != null ? text : "—";
+  }
+
+  function fmtSec(s) {
+    if (s == null) return null;
+    return s >= 1 ? s.toFixed(1) + "s" : (s * 1000).toFixed(0) + "ms";
+  }
+
+  const inf = stats.in_flight;
+  set("g-inflight", inf != null ? inf.toFixed(0) : null);
+
+  const tps = stats.throughput_tps;
+  set("g-tps", tps != null && tps > 0 ? tps.toFixed(0) : null);
+
+  set("g-ttft", fmtSec(stats.ttft_p50));
+  set("g-lat",  fmtSec(stats.lat_p50));
+
+  const tpot = stats.tpot_ms;
+  set("g-tpot", tpot != null ? tpot.toFixed(1) + "ms" : null);
 }
 
 function renderOverlayLegend() {

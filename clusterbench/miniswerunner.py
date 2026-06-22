@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import time
@@ -355,12 +356,40 @@ def _scan_instance_logs(
 # MiniSweRunner (T021) — real subprocess path
 # ---------------------------------------------------------------------------
 
+async def _stop_minisweagent_containers() -> None:
+    """Kill any running minisweagent-* Docker containers left by a cancelled run."""
+    try:
+        list_proc = await asyncio.create_subprocess_exec(
+            "docker", "ps", "-q", "--filter", "name=minisweagent-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(list_proc.communicate(), timeout=5)
+        container_ids = stdout.decode().split()
+        if not container_ids:
+            return
+        log.info("stopping %d orphaned minisweagent container(s)", len(container_ids))
+        stop_proc = await asyncio.create_subprocess_exec(
+            "docker", "stop", *container_ids,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(stop_proc.wait(), timeout=30)
+    except Exception:
+        log.warning("failed to stop minisweagent containers", exc_info=True)
+
+
 class MiniSweRunner:
     """Real runner: shells out to mini-extra per level (FR-1..FR-3).
 
     Not exercised by the default test suite — needs mini-swe-agent installed
     + Docker + the SWE-bench dataset (the `real` extra). CI uses MockRunner.
     `parse_out_dir` is unit-tested independently against a fixture.
+
+    `pool` is the full set of available instance IDs. Each call to `run(level)`
+    samples `n_per_worker * level` IDs randomly from the pool so each level
+    sees a different workload — preventing KV-cache reuse from flattering
+    latency at higher concurrency.
     """
 
     name = "miniswe"
@@ -370,7 +399,8 @@ class MiniSweRunner:
         *,
         model: str,
         base_url: str,
-        instance_ids: list[str],
+        pool: list[str],
+        n_per_worker: int,
         subset: str = "verified",
         split: str = "test",
         step_limit: int = 0,
@@ -382,7 +412,8 @@ class MiniSweRunner:
     ) -> None:
         self.model = model
         self.base_url = base_url
-        self.instance_ids = list(instance_ids)
+        self.pool = list(pool)
+        self.n_per_worker = n_per_worker
         self.subset = subset
         self.split = split
         self.step_limit = step_limit
@@ -393,10 +424,14 @@ class MiniSweRunner:
         self.runner_root = Path(runner_root) if runner_root else Path("results/miniswe")
         self.runner_root.mkdir(parents=True, exist_ok=True)
 
-    def _cmd(self, level: int, out_dir: Path) -> list[str]:
+    def _sample_instance_ids(self, level: int) -> list[str]:
+        total = min(self.n_per_worker * level, len(self.pool))
+        return random.sample(self.pool, total)
+
+    def _cmd(self, level: int, out_dir: Path, instance_ids: list[str]) -> list[str]:
         return build_cmd(
             level=level,
-            instance_ids=self.instance_ids,
+            instance_ids=instance_ids,
             model=self.model,
             out_dir=out_dir,
             subset=self.subset,
@@ -405,12 +440,13 @@ class MiniSweRunner:
         )
 
     async def run(self, level: int) -> LevelRunResult:
+        instance_ids = self._sample_instance_ids(level)
         out_dir = self.runner_root / f"level_{level:04d}"
         if out_dir.exists():
             shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True)
 
-        cmd = self._cmd(level, out_dir)
+        cmd = self._cmd(level, out_dir, instance_ids)
         env = env_for_subprocess(
             base_url=self.base_url,
             api_key=self.api_key,
@@ -440,6 +476,15 @@ class MiniSweRunner:
                 await asyncio.wait_for(proc.wait(), timeout=10)
             except asyncio.TimeoutError:
                 proc.kill()
+        except asyncio.CancelledError:
+            log.info("run cancelled: stopping mini-swe-agent and containers (level %d)", level)
+            proc.terminate()
+            try:
+                await asyncio.wait_for(asyncio.shield(proc.wait()), timeout=10)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                proc.kill()
+            await _stop_minisweagent_containers()
+            raise
         duration = time.monotonic() - t0
         log.info("mini-swe-agent done: level=%d rc=%s duration=%.1fs",
                  level, proc.returncode, duration)
