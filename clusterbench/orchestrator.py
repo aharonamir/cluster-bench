@@ -160,6 +160,11 @@ class Orchestrator:
                     "mode": self.config.mode.value,
                     "levels": list(self.config.levels),
                     "pinned_instance_ids": list(pinned),
+                    # Whether the runner actually streams — drives the dashboard's
+                    # honest "n/a" for TTFT/TPOT/cache-miss when it can't (real
+                    # mini-swe-agent is non-streaming). getattr default keeps old
+                    # runners working.
+                    "agent_streams": bool(getattr(self.runner, "streams", True)),
                 },
             )
 

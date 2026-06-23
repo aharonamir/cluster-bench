@@ -706,6 +706,31 @@ def test_event_sequence_sweep_complete():
     run_start = emitter.by_type("run_start")[0]
     assert run_start["pinned_instance_ids"] == ["a", "b"]
     assert run_start["levels"] == [1, 2]
+    # run_start declares whether the runner streams, so the dashboard can render
+    # TTFT/TPOT/cache-miss honestly. _ScriptedRunner has no flag → defaults True.
+    assert run_start["agent_streams"] is True
+
+
+def test_runner_streams_flag(tmp_path):
+    """The runner declares whether it opens streaming completions. mini-swe-agent
+    (2.4.x) is non-streaming — it calls litellm.completion() and parses the full
+    response — so TTFT/TPOT/cache-miss are not measurable for it; the mock
+    runner sends stream=True."""
+    from clusterbench.miniswerunner import MiniSweRunner, MockRunner
+
+    mock = MockRunner(
+        base_url="http://x/v1", instance_ids=["a"], runner_root=tmp_path / "mock"
+    )
+    assert mock.streams is True
+
+    real = MiniSweRunner(
+        model="m",
+        base_url="http://x/v1",
+        pool=["a"],
+        n_per_worker=1,
+        runner_root=tmp_path / "real",
+    )
+    assert real.streams is False
 
 
 def test_event_sequence_includes_knee_when_guard_trips():

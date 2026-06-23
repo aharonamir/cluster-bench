@@ -623,6 +623,14 @@ button.hidden { display: none; }
   line-height: 1;
 }
 .gauge-v.accent { color: var(--live); }
+/* "n/a" state for streaming-only gauges (TTFT/TPOT/cache) when the agent is
+   non-streaming — reads as "not applicable", not "broken / waiting". */
+.gauge-v.gauge-na {
+  color: var(--text-mute);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 1rem;
+}
 
 /* ===================================================================== */
 /* Per-level table                                                       */

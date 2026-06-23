@@ -65,7 +65,7 @@
           <label>slice size (n) <input name="n" type="number" value="5" min="1" step="1"></label>
           <label>scrape interval (s) <input name="scrape_interval_s" type="number" value="1" min="0.05" step="0.05"></label>
           <label>model <input name="model" type="text" placeholder="(server default)"></label>
-          <label class="checkbox"><input name="streaming" type="checkbox" checked> stream (enables TTFT)</label>
+          <label class="checkbox" title="Streams completions. TTFT/TPOT/cache-miss need streaming, which only the mock runner does — mini-swe-agent (real path) is non-streaming, so those gauges render n/a on real runs."><input name="streaming" type="checkbox" checked> stream <span class="hint">TTFT is mock-only</span></label>
 
           <details class="guards-details">
             <summary class="guards-summary">degradation guards — first trip marks the knee</summary>
@@ -99,9 +99,12 @@
     <div id="live-gauges" class="live-gauges hidden">
       <div class="gauge-cell"><span class="gauge-k">in-flight</span><span class="gauge-v" id="g-inflight">—</span></div>
       <div class="gauge-cell"><span class="gauge-k">tok/s</span><span class="gauge-v accent" id="g-tps">—</span></div>
-      <div class="gauge-cell"><span class="gauge-k">TTFT p50</span><span class="gauge-v" id="g-ttft">—</span></div>
+      <div class="gauge-cell" title="Time To First Token p50 — streaming-only. n/a when the agent is non-streaming (real mini-swe-agent)."><span class="gauge-k">TTFT p50</span><span class="gauge-v" id="g-ttft">—</span></div>
       <div class="gauge-cell"><span class="gauge-k">lat p50</span><span class="gauge-v" id="g-lat">—</span></div>
+      <div class="gauge-cell" title="Pre-handler queue time p50 — how long requests wait before the LLM API handler picks them up. Rises with concurrency."><span class="gauge-k">queue p50</span><span class="gauge-v" id="g-queue">—</span></div>
+      <div class="gauge-cell" title="LiteLLM proxy processing overhead p50 (health-check traffic excluded)."><span class="gauge-k">overhead</span><span class="gauge-v" id="g-overhead">—</span></div>
       <div class="gauge-cell" title="Time Per Output Token = (avg latency − avg TTFT) / avg output tokens. Rises when GPU is saturated."><span class="gauge-k">TPOT</span><span class="gauge-v" id="g-tpot">—</span></div>
+      <div class="gauge-cell" title="KV-cache misses since level start — equals the number of first-token (uncached) generations."><span class="gauge-k">cache miss</span><span class="gauge-v" id="g-cache">—</span></div>
     </div>
   </section>
 

@@ -209,6 +209,9 @@ function newRunFromStart(payload) {
     knee: null,
     levels_data: [],
     finished_at: null,
+    // Does the runner open streaming completions? When false, TTFT/TPOT/cache
+    // are not measurable and the gauges render "n/a" honestly.
+    agent_streams: payload.agent_streams !== undefined ? payload.agent_streams : true,
   };
 }
 
@@ -577,6 +580,9 @@ function normalizeRun(run, color, isLive) {
     isLive,
     levels,
     knee: report.knee || run.knee || null,
+    agent_streams: run.agent_streams !== undefined
+      ? run.agent_streams
+      : (report.agent_streams !== undefined ? report.agent_streams : true),
     ttft_available: report.ttft_available !== undefined
       ? report.ttft_available
       : (run.ttft_available !== undefined ? run.ttft_available : true),
@@ -1221,9 +1227,20 @@ function renderLiveGauges(stats) {
   if (!wrap) return;
   wrap.classList.remove("hidden");
 
+  // Streaming-only metrics (TTFT/TPOT/cache) are not measurable when the agent
+  // doesn't stream (real mini-swe-agent). Render "n/a" so a blank gauge reads
+  // as "not applicable" rather than "broken / waiting".
+  const nonStreaming = !!(state.activeRun && state.activeRun.agent_streams === false);
+
   function set(id, text) {
     const el = document.getElementById(id);
-    if (el) el.textContent = text != null ? text : "—";
+    if (!el) return;
+    el.classList.remove("gauge-na");
+    el.textContent = text != null ? text : "—";
+  }
+  function setNa(id) {
+    const el = document.getElementById(id);
+    if (el) { el.classList.add("gauge-na"); el.textContent = "n/a"; }
   }
 
   function fmtSec(s) {
@@ -1237,11 +1254,23 @@ function renderLiveGauges(stats) {
   const tps = stats.throughput_tps;
   set("g-tps", tps != null && tps > 0 ? tps.toFixed(0) : null);
 
-  set("g-ttft", fmtSec(stats.ttft_p50));
+  // These are meaningful regardless of streaming:
   set("g-lat",  fmtSec(stats.lat_p50));
+  set("g-queue", fmtSec(stats.queue_p50));
+  set("g-overhead", fmtSec(stats.overhead_p50));
+
+  if (nonStreaming) {
+    setNa("g-ttft"); setNa("g-tpot"); setNa("g-cache");
+    return;
+  }
+
+  set("g-ttft", fmtSec(stats.ttft_p50));
 
   const tpot = stats.tpot_ms;
   set("g-tpot", tpot != null ? tpot.toFixed(1) + "ms" : null);
+
+  const cache = stats.cache_misses;
+  set("g-cache", cache != null && cache > 0 ? String(cache) : null);
 }
 
 function renderOverlayLegend() {
@@ -1287,6 +1316,10 @@ function renderTtftHint() {
   if (!el) return;
   const runs = runsToRender();
   if (runs.length === 0) { el.textContent = ""; return; }
+  if (runs.some((r) => r.agent_streams === false)) {
+    el.textContent = "— agent non-streaming: TTFT/TPOT/cache-miss not measurable";
+    return;
+  }
   const anyNa = runs.some((r) => r.ttft_available === false);
   el.textContent = anyNa ? "— TTFT unavailable (streaming off)" : "";
 }

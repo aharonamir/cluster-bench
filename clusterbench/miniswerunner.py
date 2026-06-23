@@ -178,6 +178,11 @@ class Runner(Protocol):
     MockRunner drives mock_litellm in-process for CI (FR-4/FR-29)."""
 
     name: str
+    # Whether this runner opens streaming completions, i.e. whether TTFT / TPOT
+    # / cache-miss are measurable for its traffic. mini-swe-agent 2.4.x calls
+    # litellm.completion() without stream=True and parses the full response, so
+    # it is architecturally non-streaming; MockRunner sends stream=True.
+    streams: bool
 
     async def run(self, level: int) -> LevelRunResult:
         ...
@@ -393,6 +398,9 @@ class MiniSweRunner:
     """
 
     name = "miniswe"
+    # mini-swe-agent 2.4.x is non-streaming (litellm.completion, full-response
+    # parse), so TTFT/TPOT/cache-miss are not measurable for its traffic.
+    streams = False
 
     def __init__(
         self,
@@ -513,6 +521,8 @@ class MockRunner:
     """
 
     name = "mock"
+    # MockRunner sends stream=True, so TTFT/TPOT/cache-miss are measurable.
+    streams = True
 
     def __init__(
         self,
