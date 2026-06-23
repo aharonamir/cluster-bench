@@ -39,6 +39,10 @@ SERIES_REQUESTS = "litellm_proxy_total_requests_metric_total"
 SERIES_FAILED_REQUESTS = "litellm_llm_api_failed_requests_metric_total"
 SERIES_IN_FLIGHT = "litellm_in_flight_requests"
 SERIES_LATENCY_E2E = "litellm_request_total_latency_metric"
+# Health-check-free E2E latency (same Prometheus series, health-check rows excluded
+# at parse time). Only streaming / real requests remain, so avg_lat is comparable
+# to avg_ttft and TPOT is meaningful. Stored as a separate key in raw.
+SERIES_LATENCY_E2E_REAL = SERIES_LATENCY_E2E + ":real"
 SERIES_LATENCY_LLM_API = "litellm_llm_api_latency_metric"
 SERIES_PROC_OVERHEAD = "litellm_overhead_latency_metric"
 SERIES_TTFT = "litellm_llm_api_time_to_first_token_metric"  # streaming-only
@@ -51,6 +55,11 @@ _LINE_RE = re.compile(
     r'([+-]?[\d.]+(?:[eE][+-]?\d+)?|nan|\+Inf|-Inf)\s*$'
 )
 _LABEL_RE = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
+
+# LiteLLM health-check alias — these requests dominate the latency histogram
+# (thousands of fast sub-100ms calls) and contaminate avg_lat when mixed with
+# real streaming requests, making TPOT appear as 0.
+_HEALTH_CHECK_ALIAS = "litellm-internal-health-check"
 
 
 @dataclass(frozen=True)
@@ -119,16 +128,30 @@ def sum_by_label(
     return out
 
 
-def aggregate_histogram(samples: list[Sample], name: str) -> dict[str, Any]:
+def aggregate_histogram(
+    samples: list[Sample],
+    name: str,
+    *,
+    exclude_label: str | None = None,
+    exclude_value: str | None = None,
+) -> dict[str, Any]:
     """Build a histogram dict summed across all label combinations except `le`.
 
     Output shape (matches what `diff()` consumes):
         {"buckets": {edge: count}, "count": int, "sum": float}
+
+    When `exclude_label` and `exclude_value` are given, samples whose labels
+    contain that key=value pair are skipped (used to drop health-check rows).
     """
     buckets: dict[float, float] = {}
     count = 0.0
     total_sum = 0.0
     for s in samples:
+        if s.name not in (f"{name}_bucket", f"{name}_count", f"{name}_sum"):
+            continue
+        if exclude_label is not None and exclude_value is not None:
+            if any(k == exclude_label and v == exclude_value for k, v in s.labels):
+                continue
         if s.name == f"{name}_bucket":
             edge = _le_to_edge(s)
             if edge is not None:
@@ -209,6 +232,16 @@ class LiteLLMSource:
             SERIES_LATENCY_LLM_API: aggregate_histogram(samples, SERIES_LATENCY_LLM_API),
             SERIES_PROC_OVERHEAD: aggregate_histogram(samples, SERIES_PROC_OVERHEAD),
         }
+        # Health-check-free E2E latency: exclude rows that are health-check probes.
+        # These fast requests (sub-100ms) would otherwise contaminate avg_lat and
+        # produce avg_lat < avg_ttft → TPOT = 0.
+        lat_real = aggregate_histogram(
+            samples, SERIES_LATENCY_E2E,
+            exclude_label="api_key_alias", exclude_value=_HEALTH_CHECK_ALIAS,
+        )
+        if lat_real["count"] or lat_real["buckets"]:
+            raw[SERIES_LATENCY_E2E_REAL] = lat_real
+
         # Optional series — include only when present (so ttft_available and
         # queue detection work via `in raw`).
         ttft_hist = aggregate_histogram(samples, SERIES_TTFT)
@@ -264,8 +297,9 @@ class LiteLLMSource:
         ttft_p95: float | None = None
         if start.ttft_available and end.ttft_available:
             ttft_buckets = _histogram_delta(start, end, SERIES_TTFT)
-            ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
-            ttft_p95 = percentile_at_bucket_edge(ttft_buckets, 0.95)
+            if ttft_buckets.get(float("inf"), 0) > 0:
+                ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
+                ttft_p95 = percentile_at_bucket_edge(ttft_buckets, 0.95)
 
         # FR-16: queue time directly measured when the series is present in both
         # scrapes (real LiteLLM); None otherwise (mock).
@@ -373,25 +407,39 @@ def compute_live_stats(
 
     if SERIES_TTFT in start.raw and SERIES_TTFT in current.raw:
         ttft_buckets = _histogram_delta(start, current, SERIES_TTFT)
-        ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
+        # Only compute TTFT/TPOT when at least one new streaming request completed.
+        # +Inf delta = 0 means no new observations; returning 0.0 from the percentile
+        # function would display as "0" in the table, which is misleading.
+        if ttft_buckets.get(float("inf"), 0) > 0:
+            ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
 
-        # TPOT from histogram sums (more accurate than percentile subtraction).
-        lat_s = start.raw.get(SERIES_LATENCY_E2E, {})
-        lat_e = current.raw.get(SERIES_LATENCY_E2E, {})
-        ttft_s = start.raw.get(SERIES_TTFT, {})
-        ttft_e = current.raw.get(SERIES_TTFT, {})
-        lat_count = (lat_e.get("count", 0) - lat_s.get("count", 0))
-        lat_sum = (lat_e.get("sum", 0.0) - lat_s.get("sum", 0.0))
-        ttft_count = (ttft_e.get("count", 0) - ttft_s.get("count", 0))
-        ttft_sum = (ttft_e.get("sum", 0.0) - ttft_s.get("sum", 0.0))
-        out_tok = _counter_delta(start, current, SERIES_OUTPUT_TOKENS)
+            # TPOT from histogram sums.
+            # Use the health-check-free latency series so avg_lat isn't dragged
+            # below avg_ttft by thousands of fast health-check probes.
+            # Fall back to the full E2E series only when the filtered series is absent.
+            _lat_key = (
+                SERIES_LATENCY_E2E_REAL
+                if SERIES_LATENCY_E2E_REAL in start.raw and SERIES_LATENCY_E2E_REAL in current.raw
+                else SERIES_LATENCY_E2E
+            )
+            lat_s = start.raw.get(_lat_key, {})
+            lat_e = current.raw.get(_lat_key, {})
+            ttft_s = start.raw.get(SERIES_TTFT, {})
+            ttft_e = current.raw.get(SERIES_TTFT, {})
+            lat_count = (lat_e.get("count", 0) - lat_s.get("count", 0))
+            lat_sum = (lat_e.get("sum", 0.0) - lat_s.get("sum", 0.0))
+            ttft_count = (ttft_e.get("count", 0) - ttft_s.get("count", 0))
+            ttft_sum = (ttft_e.get("sum", 0.0) - ttft_s.get("sum", 0.0))
+            out_tok = _counter_delta(start, current, SERIES_OUTPUT_TOKENS)
 
-        if lat_count > 0 and ttft_count > 0 and out_tok > lat_count:
-            avg_lat = lat_sum / lat_count
-            avg_ttft = ttft_sum / ttft_count
-            avg_out_tok = out_tok / lat_count
-            gen_s = max(0.0, avg_lat - avg_ttft)
-            tpot_ms = gen_s / avg_out_tok * 1000.0
+            if lat_count > 0 and ttft_count > 0 and out_tok > 0:
+                avg_lat = lat_sum / lat_count
+                avg_ttft = ttft_sum / ttft_count
+                # Output tokens per streaming request (TTFT count = streaming count).
+                avg_out_tok = out_tok / ttft_count
+                gen_s = max(0.0, avg_lat - avg_ttft)
+                if avg_out_tok > 0:
+                    tpot_ms = gen_s / avg_out_tok * 1000.0
 
     return {
         "level": level,
