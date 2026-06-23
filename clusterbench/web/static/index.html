@@ -155,20 +155,23 @@
           <table id="level-table">
             <thead>
               <tr>
-                <th rowspan="2">run</th>
-                <th rowspan="2">level</th>
-                <th colspan="2">TTFT (s)</th>
-                <th colspan="3">latency (s)</th>
-                <th rowspan="2">tok/s</th>
-                <th rowspan="2">pass</th>
-                <th rowspan="2">err</th>
-                <th rowspan="2">in-flight</th>
-                <th rowspan="2">outcomes</th>
-                <th rowspan="2">wall (s)</th>
+                <th rowspan="2" title="Name of the run this level belongs to">run</th>
+                <th rowspan="2" title="Concurrency: number of agents (workers) running at once in this level">level</th>
+                <th colspan="2" title="Time To First Token — delay before the first token streams back. Rises when requests queue before the GPU starts generating.">TTFT (s)</th>
+                <th colspan="3" title="End-to-end request latency at the proxy (queueing + generation + overhead). Health-check traffic excluded.">latency (s)</th>
+                <th rowspan="2" title="Aggregate token throughput: total tokens generated ÷ level wall time">tok/s</th>
+                <th rowspan="2" title="Percent of tasks whose patch passed the SWE-bench tests">pass</th>
+                <th rowspan="2" title="Percent of LLM API requests that failed during the level (proxy-side counter). Request-level, not task-level; health-check traffic excluded.">err</th>
+                <th rowspan="2" title="Peak concurrent in-flight requests observed at the proxy during the level">in-flight</th>
+                <th rowspan="2" title="Per-task outcome counts: resolved / unresolved / inference_error / agent_error / timeout (priority order, mutually exclusive)">outcomes</th>
+                <th rowspan="2" title="Wall-clock duration of the level">wall (s)</th>
               </tr>
               <tr>
-                <th>p50</th><th>p95</th>
-                <th>p50</th><th>p95</th><th>p99</th>
+                <th title="50th percentile (median) first-token latency — bucket-edge, coarse">p50</th>
+                <th title="95th percentile first-token latency — bucket-edge, coarse">p95</th>
+                <th title="50th percentile (median) end-to-end latency — bucket-edge, coarse">p50</th>
+                <th title="95th percentile end-to-end latency — bucket-edge, coarse">p95</th>
+                <th title="99th percentile end-to-end latency — bucket-edge, coarse">p99</th>
               </tr>
             </thead>
             <tbody id="level-table-body"></tbody>

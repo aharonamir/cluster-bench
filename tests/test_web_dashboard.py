@@ -209,17 +209,19 @@ def test_load_saved_report_renders_all_charts(tmp_path: Path):
                     "#chart-saturation circle", "els => els.length"
                 )
                 # First option by mtime-desc is whichever run finished last.
-                # Either alpha (3 levels) or beta (4 levels) — both > 0 and
-                # consistent across all three charts.
-                assert ttft_pts >= 3, f"ttft points: {ttft_pts}"
-                assert lat_pts == ttft_pts, "latency points should match ttft"
-                assert sat_pts == ttft_pts, "saturation points should match ttft"
+                # Either alpha (3 levels) or beta (4 levels). Latency and
+                # saturation are single-series (1 circle/level); the TTFT chart
+                # draws two series (p50 + p95), so it has twice as many circles.
+                assert ttft_pts >= 6, f"ttft points: {ttft_pts}"
+                assert lat_pts >= 3, f"latency points: {lat_pts}"
+                assert lat_pts == sat_pts, "latency points should match saturation"
+                assert ttft_pts == 2 * lat_pts, "ttft has p50+p95 (2x single-series)"
 
-                # Per-level table: same number of rows as points.
+                # Per-level table: one row per level (== single-series points).
                 rows = await page.eval_on_selector_all(
                     "#level-table-body tr", "els => els.length"
                 )
-                assert rows == ttft_pts
+                assert rows == lat_pts
 
                 # TTFT column headers must be labeled p50/p95 (bucket-edge).
                 headers = await page.eval_on_selector_all(
@@ -263,9 +265,11 @@ def test_overlay_two_runs_renders_both_series(tmp_path: Path):
                 )
                 await page.click("#load-btn")
 
-                # Wait for the overlay to render: 3 + 4 = 7 points on each chart.
+                # Wait for the overlay to render. Latency is single-series, so
+                # 3 + 4 = 7 circles is the stable signal; the TTFT chart draws
+                # two series (p50 + p95) and will have twice as many.
                 await page.wait_for_function(
-                    "() => document.querySelectorAll('#chart-ttft circle').length === 7"
+                    "() => document.querySelectorAll('#chart-latency circle').length === 7"
                 )
                 ttft = await page.eval_on_selector_all(
                     "#chart-ttft circle", "els => els.length"
@@ -273,8 +277,8 @@ def test_overlay_two_runs_renders_both_series(tmp_path: Path):
                 lat = await page.eval_on_selector_all(
                     "#chart-latency circle", "els => els.length"
                 )
-                assert ttft == 7
                 assert lat == 7
+                assert ttft == 2 * lat, f"ttft has p50+p95: {ttft} vs 2*lat={2 * lat}"
 
                 # Overlay legend shows both run names.
                 legend = await page.eval_on_selector_all(

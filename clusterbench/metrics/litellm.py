@@ -110,17 +110,29 @@ def sum_unlabeled(samples: list[Sample], name: str) -> float:
 
 
 def sum_by_label(
-    samples: list[Sample], name: str, label_name: str
+    samples: list[Sample],
+    name: str,
+    label_name: str,
+    *,
+    exclude_label: str | None = None,
+    exclude_value: str | None = None,
 ) -> dict[str, float]:
     """Sum values of samples with this `name`, grouped by `label_name`'s value.
 
     Used for the request counter where we want a per-status-code breakdown
     while ignoring the other (api_key_alias, model, route, ...) labels.
+
+    When `exclude_label`/`exclude_value` are given, samples with that label
+    pair are skipped (used to drop health-check rows so they don't inflate
+    n_requests and deflate error_rate).
     """
     out: dict[str, float] = {}
     for s in samples:
         if s.name != name:
             continue
+        if exclude_label is not None and exclude_value is not None:
+            if any(k == exclude_label and v == exclude_value for k, v in s.labels):
+                continue
         for k, v in s.labels:
             if k == label_name:
                 out[v] = out.get(v, 0.0) + s.value
@@ -185,10 +197,15 @@ class LiteLLMSource:
         scrape_interval_s: float = 1.0,
         client: httpx.AsyncClient | None = None,
         ssl_verify: bool = True,
+        scrape_timeout_s: float = 15.0,
     ) -> None:
         self.metrics_url = metrics_url
         self.scrape_interval_s = scrape_interval_s
-        self._client = client or httpx.AsyncClient(timeout=5.0, verify=ssl_verify)
+        # /metrics must stay reachable under load: at high concurrency the
+        # LiteLLM proxy is busy serving streams and a 5s scrape can time out,
+        # which drops the whole level's wire metrics (delta=None). 15s gives
+        # the proxy room to answer even when saturated.
+        self._client = client or httpx.AsyncClient(timeout=scrape_timeout_s, verify=ssl_verify)
         self._owns_client = client is None
 
     async def aclose(self) -> None:
@@ -225,7 +242,11 @@ class LiteLLMSource:
             SERIES_INPUT_TOKENS: sum_unlabeled(samples, SERIES_INPUT_TOKENS),
             SERIES_OUTPUT_TOKENS: sum_unlabeled(samples, SERIES_OUTPUT_TOKENS),
             SERIES_TOTAL_TOKENS: sum_unlabeled(samples, SERIES_TOTAL_TOKENS),
-            SERIES_REQUESTS: sum_by_label(samples, SERIES_REQUESTS, "status_code"),
+            SERIES_REQUESTS: sum_by_label(
+                samples, SERIES_REQUESTS, "status_code",
+                exclude_label="api_key_alias",
+                exclude_value=_HEALTH_CHECK_ALIAS,
+            ),
             SERIES_FAILED_REQUESTS: sum_unlabeled(samples, SERIES_FAILED_REQUESTS),
             SERIES_IN_FLIGHT: sum_unlabeled(samples, SERIES_IN_FLIGHT),
             SERIES_LATENCY_E2E: aggregate_histogram(samples, SERIES_LATENCY_E2E),

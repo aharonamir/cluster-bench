@@ -646,6 +646,25 @@ function niceTicks([lo, hi], n = 5) {
   return ticks;
 }
 
+/** Bar width tuned to the pixel gap between adjacent (sorted) x levels, capped
+ *  so a few levels don't produce absurdly wide bars. Bars are then clamped into
+ *  the plot area (via clampBarX) so they never cross the axis lines. */
+function barWidthForLevels(levels, xScale, plotLeft, plotRight, maxBar = 64) {
+  if (levels.length === 0) return 8;
+  if (levels.length === 1) return Math.min(maxBar, (plotRight - plotLeft) * 0.22);
+  let minGap = Infinity;
+  for (let i = 1; i < levels.length; i++) {
+    minGap = Math.min(minGap, xScale(levels[i]) - xScale(levels[i - 1]));
+  }
+  return Math.max(4, Math.min(minGap * 0.6, maxBar));
+}
+
+/** Clamp a bar centered at `centerX` so it stays within [plotLeft, plotRight]. */
+function clampBarX(centerX, barWidth, plotLeft, plotRight) {
+  const x = centerX - barWidth / 2;
+  return Math.max(plotLeft, Math.min(x, plotRight - barWidth));
+}
+
 function fmt(v, digits = 2) {
   if (v === null || v === undefined) return "—";
   if (Number.isInteger(v)) return v.toString();
@@ -746,6 +765,14 @@ function drawSeriesChart(svg, { width, height }, runs, accessor, opts = {}) {
     drawEmptyState(svg, width, height, opts.emptyMessage || "no data yet");
     return;
   }
+  // Series: one line per entry in opts.series (e.g. p50 solid + p95 dashed).
+  // Falls back to the single `accessor` when no multi-series is given, so the
+  // latency/saturation call sites keep working unchanged.
+  const seriesList = opts.series && opts.series.length
+    ? opts.series
+    : [{ accessor, dashed: false, label: null }];
+  const primary = seriesList[0].accessor;
+
   // X domain: union of all levels (integer ticks).
   const allLevels = new Set();
   for (const run of runs) {
@@ -756,11 +783,24 @@ function drawSeriesChart(svg, { width, height }, runs, accessor, opts = {}) {
     ? [xLevels[0] * 0.5, xLevels[0] * 1.5]
     : [Math.min(...xLevels), Math.max(...xLevels)];
   const xScale = scaleLinear(xDomain, [PADDING.left, width - PADDING.right]);
-  // Y domain: union of all accessor values.
-  const yDomainRaw = extent(runs, accessor);
+
+  // Y domain: union of all series values across all runs, so every line fits.
+  let lo = Infinity, hi = -Infinity;
+  for (const run of runs) {
+    for (const lv of run.levels) {
+      for (const s of seriesList) {
+        const v = s.accessor(lv);
+        if (v === null || v === undefined || Number.isNaN(v)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+    }
+  }
+  const hasData = lo !== Infinity;
+  if (!hasData) { lo = 0; hi = 1; }
   // Pad y by 5% on top so points don't sit on the top edge.
-  const yPad = (yDomainRaw[1] - yDomainRaw[0]) * 0.05;
-  const yDomain = [Math.min(0, yDomainRaw[0]), yDomainRaw[1] + yPad];
+  const yPad = (hi - lo) * 0.05;
+  const yDomain = [Math.min(0, lo), hi + yPad];
   const yScale = scaleLinear(yDomain, [height - PADDING.bottom, PADDING.top]);
 
   drawAxes(svg, {
@@ -774,32 +814,58 @@ function drawSeriesChart(svg, { width, height }, runs, accessor, opts = {}) {
     width, height,
   });
 
-  // Per-run: one path + per-point dots.
+  // Legend (only with data and more than one series): explains line STYLE
+  // (solid vs dashed), not color, since color tracks the run.
+  if (hasData && seriesList.length > 1) {
+    let totalW = 0;
+    for (const s of seriesList) totalW += 22 + String(s.label).length * 6 + 14;
+    let lx = width - PADDING.right - totalW;
+    const ly = PADDING.top + 4;
+    for (const s of seriesList) {
+      svg.appendChild(svgEl("line", {
+        x1: lx, x2: lx + 18, y1: ly + 5, y2: ly + 5,
+        stroke: "var(--text-dim)", "stroke-width": 2,
+        "stroke-dasharray": s.dashed ? "6 3" : "none",
+      }));
+      const t = svgEl("text", {
+        class: "cb-tick", x: lx + 22, y: ly + 9, "font-size": 10,
+      });
+      t.textContent = s.label;
+      svg.appendChild(t);
+      lx += 22 + String(s.label).length * 6 + 14;
+    }
+  }
+
+  // Per-run: one path + dots per series.
   for (const run of runs) {
-    const pts = run.levels
-      .filter((lv) => accessor(lv) !== null && accessor(lv) !== undefined)
-      .map((lv) => ({ x: xScale(lv.level), y: yScale(accessor(lv)) }));
-    if (pts.length === 0) continue;
-    if (pts.length > 1) {
-      const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-      svg.appendChild(svgEl("path", {
-        d, fill: "none", stroke: run.color, "stroke-width": 2,
-        "stroke-linejoin": "round", "stroke-linecap": "round",
-      }));
+    for (const s of seriesList) {
+      const pts = run.levels
+        .filter((lv) => s.accessor(lv) !== null && s.accessor(lv) !== undefined)
+        .map((lv) => ({ x: xScale(lv.level), y: yScale(s.accessor(lv)) }));
+      if (pts.length === 0) continue;
+      if (pts.length > 1) {
+        const d = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+        svg.appendChild(svgEl("path", {
+          d, fill: "none", stroke: run.color, "stroke-width": 2,
+          "stroke-linejoin": "round", "stroke-linecap": "round",
+          "stroke-dasharray": s.dashed ? "6 3" : "none",
+        }));
+      }
+      for (const p of pts) {
+        svg.appendChild(svgEl("circle", {
+          cx: p.x, cy: p.y, r: 3,
+          fill: run.color, stroke: "var(--surface-1)", "stroke-width": 1.5,
+        }));
+      }
     }
-    for (const p of pts) {
-      svg.appendChild(svgEl("circle", {
-        cx: p.x, cy: p.y, r: 3.5,
-        fill: run.color, stroke: "var(--surface-1)", "stroke-width": 1.5,
-      }));
-    }
-    // Knee marker — always the knee color, regardless of the run's series hue,
-    // so "where it bent" reads consistently across overlaid runs.
+    // Knee marker — drawn on the primary series; always the knee color,
+    // regardless of the run's series hue, so "where it bent" reads
+    // consistently across overlaid runs.
     if (opts.showKnee && run.knee) {
       const kneeLv = run.levels.find((lv) => lv.level === run.knee.level);
-      if (kneeLv && accessor(kneeLv) !== null) {
+      if (kneeLv && primary(kneeLv) !== null) {
         const kx = xScale(run.knee.level);
-        const ky = yScale(accessor(kneeLv));
+        const ky = yScale(primary(kneeLv));
         svg.appendChild(svgEl("line", {
           class: "cb-knee-line",
           x1: kx, x2: kx,
@@ -876,12 +942,14 @@ function drawLitellmPanel(svg, { width, height }, runs) {
     svg.appendChild(lbl);
   }
 
-  const barWidth = Math.max(4, (width - PADDING.left - PADDING.right) / (xLevels.length * 4));
+  const plotLeft = PADDING.left + 8;
+  const plotRight = width - PADDING.right - 8;
+  const barWidth = barWidthForLevels(xLevels, xScale, plotLeft, plotRight);
   for (const run of runs) {
     // Bars: in-flight peak.
     for (const lv of run.levels) {
       if (!lv.delta) continue;
-      const x = xScale(lv.level) - barWidth / 2;
+      const x = clampBarX(xScale(lv.level), barWidth, plotLeft, plotRight);
       const yTop = inFlightScale(lv.delta.in_flight_peak);
       const yBase = inFlightScale(0);
       svg.appendChild(svgEl("rect", {
@@ -974,7 +1042,9 @@ function drawTaxonomy(svg, { width, height }, runs) {
     width, height,
   });
 
-  const barWidth = Math.max(8, (width - PADDING.left - PADDING.right) / (allLevels.length * 2.2));
+  const plotLeft = PADDING.left + 12;
+  const plotRight = width - PADDING.right - 12;
+  const barWidth = barWidthForLevels(allLevels, xScale, plotLeft, plotRight);
   for (const lv of levels) {
     let yBase = yScale(0);
     // Stack in OUTCOME_ORDER so resolved is on the bottom (positive outcome
@@ -984,7 +1054,7 @@ function drawTaxonomy(svg, { width, height }, runs) {
       if (count === 0) continue;
       const yTop = yScale(count);
       svg.appendChild(svgEl("rect", {
-        x: xScale(lv.level) - barWidth / 2,
+        x: clampBarX(xScale(lv.level), barWidth, plotLeft, plotRight),
         y: yTop,
         width: barWidth,
         height: Math.max(0, yBase - yTop),
@@ -1036,7 +1106,7 @@ function renderLevelTable() {
         latencyCell(lv, "p99"),
         fmt(lv.delta ? lv.delta.throughput_tps : null, 1),
         fmt((lv.pass_rate || 0) * 100, 1) + "%",
-        fmt(lv.delta ? lv.delta.error_rate : null, 3),
+        fmt((lv.delta ? lv.delta.error_rate || 0 : 0) * 100, 1) + "%",
         fmt(lv.delta ? lv.delta.in_flight_peak : null, 0),
         outcomesCell(lv.outcome_counts || {}),
         fmt(lv.duration_s || 0, 2),
@@ -1232,7 +1302,13 @@ function renderAll() {
     { width: W, height: H },
     runs,
     (lv) => lv.delta ? lv.delta.ttft_p95 : null,
-    { yLabel: "TTFT p95 (s)", yDigits: 3, emptyMessage: "no TTFT data" }
+    {
+      yLabel: "TTFT (s)", yDigits: 3, emptyMessage: "no TTFT data",
+      series: [
+        { accessor: (lv) => lv.delta ? lv.delta.ttft_p50 : null, label: "p50", dashed: false },
+        { accessor: (lv) => lv.delta ? lv.delta.ttft_p95 : null, label: "p95", dashed: true },
+      ],
+    }
   );
   drawSeriesChart(
     document.getElementById("chart-latency"),
