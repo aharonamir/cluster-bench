@@ -31,6 +31,10 @@ FAKE_TTFT_S = 0.05
 FAKE_LLM_API_LATENCY_S = 0.180
 FAKE_PROC_OVERHEAD_S = 0.020
 FAKE_E2E_LATENCY_S = FAKE_LLM_API_LATENCY_S + FAKE_PROC_OVERHEAD_S
+# Pre-handler queue time per request — small under low concurrency (real
+# LiteLLM averages ~1ms); kept under the first latency bucket so the gauge
+# populates without implying a queueing knee the mock doesn't simulate.
+FAKE_QUEUE_S = 0.0012
 
 # Bucket schema shared across all latency histograms. Cumulative counts per
 # Prometheus convention. Phase 1 will pin exact series names from a fixture.
@@ -70,6 +74,8 @@ class _State:
         self.llm_api_lat_obs: list[float] = []
         self.proc_overhead_obs: list[float] = []
         self.e2e_lat_obs: list[float] = []
+        self.queue_obs: list[float] = []
+        self.cache_misses = 0  # mirrors first-token count when streaming
         self._lock = asyncio.Lock()
 
     async def begin_request(self) -> None:
@@ -92,8 +98,12 @@ class _State:
             self.llm_api_lat_obs.append(FAKE_LLM_API_LATENCY_S + extra_delay_s)
             self.proc_overhead_obs.append(FAKE_PROC_OVERHEAD_S)
             self.e2e_lat_obs.append(FAKE_E2E_LATENCY_S + extra_delay_s)
+            self.queue_obs.append(FAKE_QUEUE_S)
             if self.streaming:
                 self.ttft_obs.append(FAKE_TTFT_S)
+                # First-token generation == cache miss in real LiteLLM, so the
+                # cache-miss counter tracks the TTFT count exactly.
+                self.cache_misses += 1
 
     async def reset(self) -> None:
         async with self._lock:
@@ -107,6 +117,8 @@ class _State:
             self.llm_api_lat_obs.clear()
             self.proc_overhead_obs.clear()
             self.e2e_lat_obs.clear()
+            self.queue_obs.clear()
+            self.cache_misses = 0
 
 
 def create_app(
@@ -302,6 +314,16 @@ def _render_prometheus(state: _State) -> str:
         state.proc_overhead_obs,
         "LiteLLM processing overhead",
     )
+    lines += _histogram_lines(
+        "litellm_request_queue_time_seconds",
+        state.queue_obs,
+        "Pre-handler queue time",
+    )
+    lines += [
+        "# HELP litellm_cache_misses_metric_total KV-cache misses",
+        "# TYPE litellm_cache_misses_metric_total counter",
+        f"litellm_cache_misses_metric_total {state.cache_misses}",
+    ]
     if state.streaming:
         lines += _histogram_lines(
             "litellm_llm_api_time_to_first_token_metric",

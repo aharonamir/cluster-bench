@@ -21,6 +21,7 @@ from clusterbench.metrics.litellm import (
     SERIES_TTFT,
     LiteLLMSource,
     aggregate_histogram,
+    compute_live_stats,
     parse_prometheus_text,
     sum_by_label,
     sum_unlabeled,
@@ -170,3 +171,35 @@ def test_diff_against_real_fixture_with_synthetic_zero_start():
     assert delta.queue_p50 is not None and delta.queue_p50 >= 0
     assert delta.queue_p95 is not None
     assert delta.suspect is False  # synthetic zero-start never triggers reset
+
+
+def test_compute_live_stats_proxy_gauges_real_fixture():
+    """compute_live_stats must surface the proxy-side gauges the dashboard
+    live-readout needs: queue p50, bench-only overhead p50, and a cache-miss
+    counter delta — all derivable from the real LiteLLM fixture."""
+    samples = parse_prometheus_text(_load())
+    raw = LiteLLMSource._aggregate(samples)
+
+    # Level start = empty (fresh proxy); current = the full fixture scrape.
+    start = ScrapeSnapshot(
+        source_name="litellm", level=1, t=0.0, raw={}, ttft_available=False
+    )
+    current = ScrapeSnapshot(
+        source_name="litellm",
+        level=1,
+        t=100.0,
+        raw=raw,
+        ttft_available=SERIES_TTFT in raw,
+    )
+    live = compute_live_stats(start, current, elapsed_s=100.0, level=1)
+
+    # Queue time is directly measured in real LiteLLM (FR-16).
+    assert live["queue_p50"] is not None and live["queue_p50"] >= 0
+    # Bench-only overhead excludes health-check probes (~50ms each); the
+    # filtered p50 lands well under that, proving the exclusion works.
+    assert live["overhead_p50"] is not None
+    assert live["overhead_p50"] < 0.05
+    # Cache-miss counter delta is positive (fixture has uncached generations).
+    assert live["cache_misses"] > 0
+    # And the headline gauges the dashboard already relied on still compute.
+    assert live["ttft_p50"] is not None and live["ttft_p50"] > 0

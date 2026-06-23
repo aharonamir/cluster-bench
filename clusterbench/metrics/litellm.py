@@ -49,6 +49,14 @@ SERIES_TTFT = "litellm_llm_api_time_to_first_token_metric"  # streaming-only
 # Pre-handler queue time — directly measured (replaces FR-16's heuristic when
 # present).
 SERIES_QUEUE_TIME = "litellm_request_queue_time_seconds"
+# KV-cache misses (counter). In real LiteLLM this tracks the streaming /
+# first-token count per model — every uncached prompt that reaches generation.
+SERIES_CACHE_MISSES = "litellm_cache_misses_metric_total"
+# Health-check-free processing overhead (same Prometheus series, health-check
+# rows excluded at parse time). Stored as a separate key so the live gauge and
+# the LiteLLM overhead bars reflect bench traffic, not thousands of fast
+# health-check probes that would otherwise dominate the histogram.
+SERIES_PROC_OVERHEAD_REAL = SERIES_PROC_OVERHEAD + ":real"
 
 _LINE_RE = re.compile(
     r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+'
@@ -249,6 +257,7 @@ class LiteLLMSource:
             ),
             SERIES_FAILED_REQUESTS: sum_unlabeled(samples, SERIES_FAILED_REQUESTS),
             SERIES_IN_FLIGHT: sum_unlabeled(samples, SERIES_IN_FLIGHT),
+            SERIES_CACHE_MISSES: sum_unlabeled(samples, SERIES_CACHE_MISSES),
             SERIES_LATENCY_E2E: aggregate_histogram(samples, SERIES_LATENCY_E2E),
             SERIES_LATENCY_LLM_API: aggregate_histogram(samples, SERIES_LATENCY_LLM_API),
             SERIES_PROC_OVERHEAD: aggregate_histogram(samples, SERIES_PROC_OVERHEAD),
@@ -262,6 +271,15 @@ class LiteLLMSource:
         )
         if lat_real["count"] or lat_real["buckets"]:
             raw[SERIES_LATENCY_E2E_REAL] = lat_real
+
+        # Same health-check exclusion for processing overhead so the live gauge
+        # and the LiteLLM overhead bars reflect bench traffic, not probes.
+        overhead_real = aggregate_histogram(
+            samples, SERIES_PROC_OVERHEAD,
+            exclude_label="api_key_alias", exclude_value=_HEALTH_CHECK_ALIAS,
+        )
+        if overhead_real["count"] or overhead_real["buckets"]:
+            raw[SERIES_PROC_OVERHEAD_REAL] = overhead_real
 
         # Optional series — include only when present (so ttft_available and
         # queue detection work via `in raw`).
@@ -309,9 +327,15 @@ class LiteLLMSource:
         lat_p95 = percentile_at_bucket_edge(lat_buckets, 0.95)
         lat_p99 = percentile_at_bucket_edge(lat_buckets, 0.99)
 
-        # Proc overhead is a histogram; report its p50 as the level's
-        # representative overhead (LiteLLM reports it directly — FR-13).
-        proc_buckets = _histogram_delta(start, end, SERIES_PROC_OVERHEAD)
+        # Proc overhead p50, bench-only (health-check probes excluded) when the
+        # filtered series is present; falls back to the full series otherwise
+        # (e.g. the mock, which emits no health checks). FR-13.
+        proc_key = (
+            SERIES_PROC_OVERHEAD_REAL
+            if SERIES_PROC_OVERHEAD_REAL in end.raw
+            else SERIES_PROC_OVERHEAD
+        )
+        proc_buckets = _histogram_delta(start, end, proc_key)
         proc_overhead_s = percentile_at_bucket_edge(proc_buckets, 0.50)
 
         ttft_p50: float | None = None
@@ -472,6 +496,31 @@ def compute_live_stats(
                 if avg_out_tok > 0:
                     tpot_ms = gen_s / avg_out_tok * 1000.0
 
+    # ---- Proxy-side gauges (independent of the TTFT/TPOT block above) ----
+    # Processing overhead, bench-only (health-checks excluded). Falls back to
+    # the full series when the filtered one is absent (mock has no probes).
+    overhead_p50: float | None = None
+    oh_key = (
+        SERIES_PROC_OVERHEAD_REAL
+        if SERIES_PROC_OVERHEAD_REAL in current.raw
+        else SERIES_PROC_OVERHEAD
+    )
+    oh_buckets = _histogram_delta(start, current, oh_key)
+    if oh_buckets.get(float("inf"), 0) > 0:
+        overhead_p50 = percentile_at_bucket_edge(oh_buckets, 0.50)
+
+    # Pre-handler queue time — directly measured; rises as concurrency grows.
+    # Absent in the mock (→ None).
+    queue_p50: float | None = None
+    if SERIES_QUEUE_TIME in current.raw:
+        q_buckets = _histogram_delta(start, current, SERIES_QUEUE_TIME)
+        if q_buckets.get(float("inf"), 0) > 0:
+            queue_p50 = percentile_at_bucket_edge(q_buckets, 0.50)
+
+    # KV-cache misses this window (counter delta). For real LiteLLM this tracks
+    # the streaming/first-token count.
+    cache_misses = int(max(0.0, _counter_delta(start, current, SERIES_CACHE_MISSES)))
+
     return {
         "level": level,
         "elapsed_s": round(elapsed_s, 1),
@@ -480,6 +529,9 @@ def compute_live_stats(
         "lat_p50": lat_p50,
         "ttft_p50": ttft_p50,
         "tpot_ms": round(tpot_ms, 1) if tpot_ms is not None else None,
+        "overhead_p50": overhead_p50,
+        "queue_p50": queue_p50,
+        "cache_misses": cache_misses,
     }
 
 
