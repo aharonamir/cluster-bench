@@ -271,6 +271,7 @@ async function loadConfig() {
   }
   renderConfigReadout();
   prefillControlsFromConfig();
+  syncLiveReadout();
 }
 
 function _setText(id, value) {
@@ -296,18 +297,30 @@ function renderConfigReadout() {
   const defaults = (cfg && cfg.run_defaults) || {};
 
   _setText("rd-base", _shortUrl(server.base_url));
-  _setText("rd-model", defaults.model || "—");
   _setText("rd-metrics", _shortUrl(server.metrics_url));
-  _setText("rd-scrape",
-    defaults.scrape_interval_s != null ? `${defaults.scrape_interval_s}s` : "—");
-  _setText("rd-streaming", defaults.streaming === false ? "off" : "on");
-
+  // model / scrape / streaming are per-run form fields — mirrored live by
+  // syncLiveReadout() rather than pinned to the server default here.
   const pathEl = document.getElementById("rd-path");
   if (pathEl) {
     const path = server.path || "—";
     pathEl.textContent = path;
     pathEl.className = "v " + (path === "real" ? "path-real" : "path-mock");
   }
+  syncLiveReadout();
+}
+
+/** Mirror the per-run form fields (model, scrape, streaming) into the top
+ *  readout so it reflects what the current run will actually use, not just the
+ *  server default. Called on input and once after the form is prefilled. */
+function syncLiveReadout() {
+  const form = document.getElementById("start-form");
+  if (!form) return;
+  const defaults = (state.serverConfig && state.serverConfig.run_defaults) || {};
+  const modelVal = (form.model.value || "").trim();
+  _setText("rd-model", modelVal || defaults.model || "—");
+  const scrape = parseFloat(form.scrape_interval_s.value);
+  _setText("rd-scrape", Number.isFinite(scrape) && scrape > 0 ? `${scrape}s` : "—");
+  _setText("rd-streaming", form.streaming.checked ? "on" : "off");
 }
 
 /** Prefill the controls with the server defaults so a submitted run inherits
@@ -1373,6 +1386,12 @@ function initTabs() {
 function wire() {
   const form = document.getElementById("start-form");
   if (form) form.addEventListener("submit", startRun);
+  // Keep the top readout in sync with the per-run form fields as they're edited.
+  if (form) {
+    form.scrape_interval_s.addEventListener("input", syncLiveReadout);
+    form.streaming.addEventListener("change", syncLiveReadout);
+    form.model.addEventListener("input", syncLiveReadout);
+  }
   const stopBtn = document.getElementById("stop-btn");
   if (stopBtn) stopBtn.addEventListener("click", stopRun);
   const loadBtn = document.getElementById("load-btn");

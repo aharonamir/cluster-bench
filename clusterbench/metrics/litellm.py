@@ -316,7 +316,12 @@ class LiteLLMSource:
 
         ttft_p50: float | None = None
         ttft_p95: float | None = None
-        if start.ttft_available and end.ttft_available:
+        # Require TTFT only in the end snapshot. The start scrape often predates
+        # the first streaming request (so SERIES_TTFT is absent there);
+        # _histogram_delta treats a missing series as a zero baseline, which is
+        # correct since no streaming before the start scrape means nothing to
+        # subtract. end.ttft_available=False (streaming off) still → None.
+        if end.ttft_available:
             ttft_buckets = _histogram_delta(start, end, SERIES_TTFT)
             if ttft_buckets.get(float("inf"), 0) > 0:
                 ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
@@ -426,11 +431,16 @@ def compute_live_stats(
     ttft_p50: float | None = None
     tpot_ms: float | None = None
 
-    if SERIES_TTFT in start.raw and SERIES_TTFT in current.raw:
+    if SERIES_TTFT in current.raw:
         ttft_buckets = _histogram_delta(start, current, SERIES_TTFT)
         # Only compute TTFT/TPOT when at least one new streaming request completed.
         # +Inf delta = 0 means no new observations; returning 0.0 from the percentile
         # function would display as "0" in the table, which is misleading.
+        # Note: we don't require TTFT in start.raw — the level's start scrape
+        # often predates the first streaming request, so SERIES_TTFT is absent
+        # there. _histogram_delta treats a missing series as an empty (zero)
+        # baseline, which is correct: no streaming before the start scrape means
+        # nothing to subtract.
         if ttft_buckets.get(float("inf"), 0) > 0:
             ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
 
