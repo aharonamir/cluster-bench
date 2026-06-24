@@ -454,7 +454,38 @@ Mount a volume at `/app/results` to keep persisted reports across restarts.
 
 ---
 
-## 9. Troubleshooting
+## 9. Reprocessing saved reports after an upgrade
+
+If you upgrade ClusterBench and the outcome classification logic has changed
+(e.g. the fix for `TimeoutExpired` / `InternalServerError` being misreported as
+`unresolved`), existing report JSONs on disk will have stale `outcome_counts`.
+Reprocess them in-place with:
+
+```bash
+# Default results dir (results/ + results/miniswe/)
+uv run python scripts/reprocess_outcomes.py
+
+# Explicit dirs (e.g. if your results live elsewhere)
+uv run python scripts/reprocess_outcomes.py results.org results.org/miniswe
+```
+
+The script:
+- Finds every `*.json` report whose `pinned_instance_ids` matches the preds in a
+  `miniswe/level_XXXX/` out_dir
+- Re-derives `outcome_counts` using `exit_statuses_*.yaml` (written by
+  mini-swe-agent ≥2.4) — the authoritative source for `TimeoutExpired`,
+  `InternalServerError`, etc.
+- Writes the updated JSON **in-place**, with the original backed up as
+  `<run_id>.json.bak`
+- Skips levels with no YAML (nothing to fix) and is idempotent (skips already-
+  correct counts)
+
+After running it, reload the dashboard — the taxonomy chart and per-level
+outcomes column will reflect the corrected counts immediately.
+
+---
+
+## 10. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -470,7 +501,7 @@ Mount a volume at `/app/results` to keep persisted reports across restarts.
 
 ---
 
-## 10. Quick reference
+## 11. Quick reference
 
 ```bash
 # Mock path, two terminals:

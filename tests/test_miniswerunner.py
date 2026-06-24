@@ -249,6 +249,37 @@ def test_parse_out_dir_handles_dict_keyed_preds(tmp_path):
     assert {p.instance_id for p in preds} == {"django__django-1", "django__django-2"}
 
 
+def test_parse_out_dir_reads_exit_statuses_yaml(tmp_path):
+    """exit_statuses_*.yaml is the authoritative source for timeout/error
+    classification; instances listed only in the YAML (no per-instance log)
+    still produce ProcessRecords with the correct timed_out/return_status."""
+    (tmp_path / "preds.json").write_text(
+        json.dumps(
+            {
+                "pkg__pkg-timeout": {"model_patch": ""},
+                "pkg__pkg-error": {"model_patch": ""},
+                "pkg__pkg-submitted": {"model_patch": "p"},
+            }
+        )
+    )
+    (tmp_path / "exit_statuses_123.yaml").write_text(
+        "instances_by_exit_status:\n"
+        "    TimeoutExpired:\n"
+        "    - pkg__pkg-timeout\n"
+        "    InternalServerError:\n"
+        "    - pkg__pkg-error\n"
+        "    Submitted:\n"
+        "    - pkg__pkg-submitted\n"
+    )
+    records, preds = parse_out_dir(tmp_path)
+    by_id = {r.instance_id: r for r in records}
+    assert by_id["pkg__pkg-timeout"].timed_out is True
+    assert by_id["pkg__pkg-error"].return_status == 1
+    assert not by_id["pkg__pkg-submitted"].timed_out
+    assert by_id["pkg__pkg-submitted"].return_status in (None, 0)
+    assert len(preds) == 3
+
+
 # ---------------------------------------------------------------------------
 # MockRunner (T023) — integration against mock_litellm
 # ---------------------------------------------------------------------------

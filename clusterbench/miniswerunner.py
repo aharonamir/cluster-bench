@@ -23,6 +23,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+try:
+    import yaml as _yaml
+    _YAML_AVAILABLE = True
+except ImportError:
+    _YAML_AVAILABLE = False
+
 import httpx
 
 log = logging.getLogger(__name__)
@@ -192,10 +198,37 @@ class Runner(Protocol):
 # out_dir parsing (T021) — shared by MiniSweRunner + fixture tests
 # ---------------------------------------------------------------------------
 
+def _parse_exit_statuses_yaml(out_dir: Path) -> dict[str, str]:
+    """Parse exit_statuses_*.yaml written by mini-swe-agent ≥2.4.
+
+    Returns {instance_id: exit_status_string} (e.g. "TimeoutExpired",
+    "Submitted", "LimitsExceeded", "InternalServerError"). Empty dict if no
+    file found or yaml unavailable — callers fall back to log scanning only.
+    """
+    candidates = list(out_dir.glob("exit_statuses_*.yaml"))
+    if not candidates or not _YAML_AVAILABLE:
+        return {}
+    result: dict[str, str] = {}
+    for path in candidates:
+        try:
+            data = _yaml.safe_load(path.read_text()) or {}
+        except Exception:
+            continue
+        by_status = data.get("instances_by_exit_status") or {}
+        for status, ids in by_status.items():
+            if isinstance(ids, list):
+                for iid in ids:
+                    result[str(iid)] = str(status)
+    return result
+
+
 def parse_out_dir(out_dir: Path) -> tuple[list[ProcessRecord], list[PredRecord]]:
     """Parse a mini-swe-agent out_dir (FR-17/FR-18).
 
     Reads:
+      - exit_statuses_*.yaml (mini-swe-agent ≥2.4): canonical per-instance
+        exit status (TimeoutExpired, Submitted, LimitsExceeded, …). Instances
+        here may have no per-instance log directory.
       - preds.json: list of {instance_id, model_patch?, ...}
       - per-instance log/trajectory files for process info (return status,
         wall time, timeout flag, log tail).
@@ -208,6 +241,9 @@ def parse_out_dir(out_dir: Path) -> tuple[list[ProcessRecord], list[PredRecord]]
     function is the single place to update if it drifts.
     """
     out_dir = Path(out_dir)
+
+    exit_status_map = _parse_exit_statuses_yaml(out_dir)
+
     preds: list[PredRecord] = []
     preds_file = out_dir / "preds.json"
     if preds_file.is_file():
@@ -235,6 +271,8 @@ def parse_out_dir(out_dir: Path) -> tuple[list[ProcessRecord], list[PredRecord]]
             )
 
     instance_ids: set[str] = {p.instance_id for p in preds}
+    # Also include any IDs from the YAML that didn't make it to preds.json.
+    instance_ids.update(exit_status_map.keys())
     if not instance_ids:
         for pattern in ("**/*.traj", "**/*.log"):
             for f in out_dir.glob(pattern):
@@ -247,6 +285,13 @@ def parse_out_dir(out_dir: Path) -> tuple[list[ProcessRecord], list[PredRecord]]
         _log_path, tail, timed_out, return_status, wall, inference_error = _scan_instance_logs(
             out_dir, iid
         )
+        # exit_statuses_*.yaml is authoritative when present; override log heuristics.
+        yaml_status = exit_status_map.get(iid)
+        if yaml_status == "TimeoutExpired":
+            timed_out = True
+        elif yaml_status == "InternalServerError":
+            if return_status is None:
+                return_status = 1
         process_records.append(
             ProcessRecord(
                 instance_id=iid,
