@@ -57,6 +57,13 @@ SERIES_CACHE_MISSES = "litellm_cache_misses_metric_total"
 # the LiteLLM overhead bars reflect bench traffic, not thousands of fast
 # health-check probes that would otherwise dominate the histogram.
 SERIES_PROC_OVERHEAD_REAL = SERIES_PROC_OVERHEAD + ":real"
+# Process-level health gauges (instantaneous; captured at end of each level).
+SERIES_PROC_RSS = "process_resident_memory_bytes"
+SERIES_PROC_OPEN_FDS = "process_open_fds"
+SERIES_PROC_MAX_FDS = "process_max_fds"
+# Python GC counter, labeled by generation. gen0 is too noisy; gen1/gen2
+# deltas reveal Python object-churn pressure under load.
+SERIES_GC_COLLECTIONS = "python_gc_collections_total"
 
 _LINE_RE = re.compile(
     r'^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+'
@@ -258,6 +265,10 @@ class LiteLLMSource:
             SERIES_FAILED_REQUESTS: sum_unlabeled(samples, SERIES_FAILED_REQUESTS),
             SERIES_IN_FLIGHT: sum_unlabeled(samples, SERIES_IN_FLIGHT),
             SERIES_CACHE_MISSES: sum_unlabeled(samples, SERIES_CACHE_MISSES),
+            SERIES_PROC_RSS: sum_unlabeled(samples, SERIES_PROC_RSS),
+            SERIES_PROC_OPEN_FDS: sum_unlabeled(samples, SERIES_PROC_OPEN_FDS),
+            SERIES_PROC_MAX_FDS: sum_unlabeled(samples, SERIES_PROC_MAX_FDS),
+            SERIES_GC_COLLECTIONS: sum_by_label(samples, SERIES_GC_COLLECTIONS, "generation"),
             SERIES_LATENCY_E2E: aggregate_histogram(samples, SERIES_LATENCY_E2E),
             SERIES_LATENCY_LLM_API: aggregate_histogram(samples, SERIES_LATENCY_LLM_API),
             SERIES_PROC_OVERHEAD: aggregate_histogram(samples, SERIES_PROC_OVERHEAD),
@@ -384,6 +395,25 @@ class LiteLLMSource:
             queue_p50 = percentile_at_bucket_edge(queue_buckets, 0.50)
             queue_p95 = percentile_at_bucket_edge(queue_buckets, 0.95)
 
+        # Process-health gauges — take end-of-level snapshot (not delta).
+        rss_bytes = end.raw.get(SERIES_PROC_RSS, 0.0)
+        rss_mb: float | None = round(rss_bytes / (1024 * 1024), 1) if rss_bytes > 0 else None
+        open_fds_v = end.raw.get(SERIES_PROC_OPEN_FDS, 0.0)
+        open_fds: int | None = int(open_fds_v) if open_fds_v > 0 else None
+        max_fds_v = end.raw.get(SERIES_PROC_MAX_FDS, 0.0)
+        max_fds: int | None = int(max_fds_v) if max_fds_v > 0 else None
+
+        # GC gen1/gen2 deltas — skipping gen0 (too frequent to be meaningful).
+        gc_gen1: int | None = None
+        gc_gen2: int | None = None
+        start_gc = start.raw.get(SERIES_GC_COLLECTIONS, {})
+        end_gc = end.raw.get(SERIES_GC_COLLECTIONS, {})
+        if end_gc:
+            _gen1 = int(max(0, end_gc.get("1", 0) - start_gc.get("1", 0)))
+            _gen2 = int(max(0, end_gc.get("2", 0) - start_gc.get("2", 0)))
+            gc_gen1 = _gen1 if _gen1 > 0 else None
+            gc_gen2 = _gen2 if _gen2 > 0 else None
+
         suspect = any(
             v < 0
             for v in (
@@ -411,6 +441,11 @@ class LiteLLMSource:
             queue_p95=queue_p95,
             tpot_ms=tpot_ms,
             cache_misses=cache_misses if cache_misses > 0 else None,
+            rss_mb=rss_mb,
+            open_fds=open_fds,
+            max_fds=max_fds,
+            gc_gen1=gc_gen1,
+            gc_gen2=gc_gen2,
         )
 
 

@@ -649,9 +649,12 @@ def _build_analysis_prompt(report: "RunReport") -> str:
         "5. The saturation knee — at which concurrency level does the cluster start to degrade "
         "and what is the primary signal (latency, error rate, TTFT spike, TPOT rise)?\n"
         "6. Outcome taxonomy — are timeouts or errors concentrated at specific concurrency levels?\n"
-        "7. Specific recommendations for the inference cluster operator: what to change or test "
+        "7. Process health (if data available) — does RSS grow with concurrency (memory pressure)? "
+        "Is the FD ratio approaching the limit (connection pool leak)? "
+        "Do gen1/gen2 GC counts spike at high load (Python object churn)?\n"
+        "8. Specific recommendations for the inference cluster operator: what to change or test "
         "next (e.g. batch size, number of replicas, model parallelism, KV-cache tuning, "
-        "prefix caching, chunked prefill)\n\n"
+        "prefix caching, chunked prefill, connection pool sizing)\n\n"
         "Be specific and cite the numbers from the data below.\n\n"
     )
 
@@ -695,6 +698,34 @@ def _build_analysis_prompt(report: "RunReport") -> str:
             f"{lv.duration_s:>7.1f}  {outcomes_str}"
         )
     lines.append("")
+
+    # Process-health section — only emit if any level has data.
+    if any(lv.delta and lv.delta.rss_mb is not None for lv in report.levels):
+        lines.append("## Process health (end-of-level snapshot)")
+        ph_header = (
+            f"{'level':>6}  {'rss_mb':>8}  {'open_fds':>9}  {'max_fds':>8}  "
+            f"{'fd%':>5}  {'gc_gen1':>8}  {'gc_gen2':>8}"
+        )
+        lines.append(ph_header)
+        lines.append("-" * len(ph_header))
+        for lv in sorted(report.levels, key=lambda l: l.level):
+            d = lv.delta
+            fd_pct = (
+                f"{d.open_fds / d.max_fds * 100:.1f}%"
+                if d and d.open_fds and d.max_fds
+                else "n/a"
+            )
+            lines.append(
+                f"{lv.level:>6}  "
+                f"{_f(d.rss_mb if d else None, '.1f'):>8}  "
+                f"{str(d.open_fds) if d and d.open_fds is not None else 'n/a':>9}  "
+                f"{str(d.max_fds) if d and d.max_fds is not None else 'n/a':>8}  "
+                f"{fd_pct:>5}  "
+                f"{str(d.gc_gen1) if d and d.gc_gen1 is not None else 'n/a':>8}  "
+                f"{str(d.gc_gen2) if d and d.gc_gen2 is not None else 'n/a':>8}"
+            )
+        lines.append("")
+
     lines.append("Provide your analysis:")
     return "\n".join(lines)
 

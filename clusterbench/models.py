@@ -194,6 +194,11 @@ class LevelDelta:
     queue_p95: float | None = None
     tpot_ms: float | None = None
     cache_misses: int | None = None
+    rss_mb: float | None = None
+    open_fds: int | None = None
+    max_fds: int | None = None
+    gc_gen1: int | None = None
+    gc_gen2: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
