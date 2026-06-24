@@ -511,6 +511,93 @@ async function _streamAnalysis(runId, win, btn) {
   return { analysis: tokens.join(""), model };
 }
 
+/** Serialize an SVG element with computed styles inlined so it renders
+ *  correctly in a new window that lacks the dashboard's stylesheet and
+ *  CSS custom properties. */
+function _serializeSvgWithStyles(svgEl) {
+  // Clone so we don't mutate the live chart.
+  const clone = svgEl.cloneNode(true);
+
+  // CSS variable fallbacks matching the dashboard palette (dark-on-dark
+  // needs to be flipped to dark-on-white for print).
+  const VAR_MAP = {
+    "--text":      "#111",
+    "--text-dim":  "#444",
+    "--text-mute": "#777",
+    "--surface-1": "#fff",
+    "--surface-2": "#f5f5f5",
+    "--surface-3": "#ebebeb",
+    "--line":      "#ccc",
+    "--line-soft": "#e0e0e0",
+    "--live":      "#0a9b87",
+    "--knee":      "#c0392b",
+    "--mono":      "JetBrains Mono, monospace",
+  };
+
+  function resolveVar(val) {
+    if (!val || !val.includes("var(")) return val;
+    return val.replace(/var\((--[^,)]+)(?:,\s*([^)]+))?\)/g, (_, name, fallback) => {
+      return VAR_MAP[name.trim()] || fallback || "#999";
+    });
+  }
+
+  // Walk all elements and inline fill/stroke/font attributes.
+  const ATTRS = ["fill", "stroke", "color", "font-family", "font-size", "opacity"];
+  clone.querySelectorAll("*").forEach((el) => {
+    // Resolve inline style="" vars.
+    if (el.style) {
+      for (const prop of ATTRS) {
+        const v = el.style.getPropertyValue(prop);
+        if (v) el.style.setProperty(prop, resolveVar(v));
+      }
+    }
+    // Resolve presentation attributes (fill=, stroke= etc.).
+    for (const attr of ATTRS) {
+      const v = el.getAttribute(attr);
+      if (v) el.setAttribute(attr, resolveVar(v));
+    }
+  });
+
+  // Force a white background on the SVG itself.
+  clone.setAttribute("style", "background:#fff");
+
+  // Compute and inline text/line colors from live elements using getComputedStyle.
+  // This handles class-based styling (cb-tick, cb-axis, etc.).
+  const liveEls = svgEl.querySelectorAll("*");
+  const cloneEls = clone.querySelectorAll("*");
+  liveEls.forEach((liveEl, i) => {
+    const cl = cloneEls[i];
+    if (!cl) return;
+    const cs = getComputedStyle(liveEl);
+    // Only set if the computed value is a real color (not transparent/none).
+    const fill = cs.fill;
+    const stroke = cs.stroke;
+    if (fill && fill !== "none" && fill !== "rgba(0, 0, 0, 0)") {
+      // Skip very dark fills that would be invisible on white — remap to dark grey.
+      cl.setAttribute("fill", _remapDarkColor(fill));
+    }
+    if (stroke && stroke !== "none" && stroke !== "rgba(0, 0, 0, 0)") {
+      cl.setAttribute("stroke", _remapDarkColor(stroke));
+    }
+    const ff = cs.fontFamily;
+    if (ff) cl.setAttribute("font-family", ff.replace(/var\([^)]+\)/g, "monospace"));
+  });
+
+  return new XMLSerializer().serializeToString(clone);
+}
+
+/** Very dark colors (near-black, the dashboard's dark surface bg) become mid-grey for print. */
+function _remapDarkColor(cssColor) {
+  // Parse rgb() / rgba() and lighten if all channels < 40 (very dark surface).
+  const m = cssColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return cssColor;
+  const [r, g, b] = [+m[1], +m[2], +m[3]];
+  if (r < 40 && g < 40 && b < 40) return "#555";
+  // Very light (near-white) on white background → darken slightly.
+  if (r > 230 && g > 230 && b > 230) return "#ddd";
+  return cssColor;
+}
+
 function _fmtVal(v, digits = 3) {
   if (v === null || v === undefined) return "—";
   if (typeof v === "number") return v.toFixed(digits);
@@ -549,7 +636,15 @@ function _buildPdfHtml(report, analysisPayload) {
     </tr>`;
   }).join("");
 
-  // Capture SVG charts currently rendered in the dashboard
+  // Capture SVG charts. Temporarily push the report as the sole overlay run
+  // so renderAll() draws this report's data regardless of current dashboard state.
+  const savedOverlay = state.overlayRuns.slice();
+  const savedActive = state.activeRun;
+  state.overlayRuns = [{ run_id: report.run_id, name: report.name || report.run_id, report }];
+  // Suppress activeRun so runsToRender picks overlayRuns.
+  state.activeRun = null;
+  renderAll();
+
   const chartIds = ["chart-ttft", "chart-latency", "chart-saturation", "chart-litellm", "chart-taxonomy"];
   const chartLabels = {
     "chart-ttft": "TTFT — agents vs first-token latency",
@@ -561,13 +656,17 @@ function _buildPdfHtml(report, analysisPayload) {
   const svgSections = chartIds.map((id) => {
     const el = document.getElementById(id);
     if (!el) return "";
-    const serializer = new XMLSerializer();
-    const svgStr = serializer.serializeToString(el);
+    const svgStr = _serializeSvgWithStyles(el);
     return `<div class="chart-block">
       <h3>${chartLabels[id] || id}</h3>
       <div class="svg-wrap">${svgStr}</div>
     </div>`;
   }).join("\n");
+
+  // Restore dashboard state.
+  state.overlayRuns = savedOverlay;
+  state.activeRun = savedActive;
+  renderAll();
 
   const analysisHtml = analysisPayload
     ? `<section class="analysis">
@@ -601,9 +700,6 @@ function _buildPdfHtml(report, analysisPayload) {
   tr:nth-child(even) td { background: #fafafa; }
   .chart-block { margin: 1rem 0; page-break-inside: avoid; }
   .svg-wrap svg { width: 100%; height: auto; max-height: 280px; display: block; }
-  /* Re-skin SVG text for print — the dashboard uses light-on-dark */
-  .svg-wrap svg text { fill: #222 !important; }
-  .svg-wrap svg line, .svg-wrap svg path { stroke: #666; }
   .analysis { margin-top: 1.5rem; }
   .model-tag { font-size: 0.7em; background: #eef; padding: 1px 6px; border-radius: 3px;
                color: #336; margin-left: 0.5rem; vertical-align: middle; }
