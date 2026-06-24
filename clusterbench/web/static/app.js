@@ -1065,13 +1065,14 @@ function drawTaxonomy(svg, { width, height }, runs) {
   const plotRight = width - PADDING.right - 12;
   const barWidth = barWidthForLevels(allLevels, xScale, plotLeft, plotRight);
   for (const lv of levels) {
-    let yBase = yScale(0);
+    let cumulative = 0;
     // Stack in OUTCOME_ORDER so resolved is on the bottom (positive outcome
     // on the baseline) and timeout on top.
     for (const oc of OUTCOME_ORDER) {
       const count = (lv.outcome_counts || {})[oc] || 0;
       if (count === 0) continue;
-      const yTop = yScale(count);
+      const yBase = yScale(cumulative);
+      const yTop = yScale(cumulative + count);
       svg.appendChild(svgEl("rect", {
         x: clampBarX(xScale(lv.level), barWidth, plotLeft, plotRight),
         y: yTop,
@@ -1080,7 +1081,7 @@ function drawTaxonomy(svg, { width, height }, runs) {
         fill: OUTCOME_COLORS[oc],
         opacity: 0.85,
       }));
-      yBase = yTop;
+      cumulative += count;
     }
   }
 
