@@ -99,6 +99,16 @@ def test_build_cmd_step_limit_emitted_when_positive():
     assert any("agent.step_limit=20" in v for v in config_values)
 
 
+def test_build_cmd_streaming_adds_model_class():
+    from clusterbench.miniswerunner import _STREAMING_MODEL_CLASS
+    cmd_no_stream = build_cmd(level=1, instance_ids=["x"], model="m", out_dir=Path("/o"), streaming=False)
+    assert "--model-class" not in cmd_no_stream
+
+    cmd_stream = build_cmd(level=1, instance_ids=["x"], model="m", out_dir=Path("/o"), streaming=True)
+    assert "--model-class" in cmd_stream
+    assert cmd_stream[cmd_stream.index("--model-class") + 1] == _STREAMING_MODEL_CLASS
+
+
 def test_build_cmd_rejects_invalid_inputs():
     with pytest.raises(ValueError):
         build_cmd(level=0, instance_ids=["x"], model="m", out_dir=Path("/o"))

@@ -712,10 +712,9 @@ def test_event_sequence_sweep_complete():
 
 
 def test_runner_streams_flag(tmp_path):
-    """The runner declares whether it opens streaming completions. mini-swe-agent
-    (2.4.x) is non-streaming — it calls litellm.completion() and parses the full
-    response — so TTFT/TPOT/cache-miss are not measurable for it; the mock
-    runner sends stream=True."""
+    """streams flag tracks the streaming= config: False by default (matches
+    mini-swe-agent 2.4.x default), True when streaming=True is passed
+    (activates StreamingLitellmModel patch). MockRunner always streams."""
     from clusterbench.miniswerunner import MiniSweRunner, MockRunner
 
     mock = MockRunner(
@@ -723,14 +722,25 @@ def test_runner_streams_flag(tmp_path):
     )
     assert mock.streams is True
 
-    real = MiniSweRunner(
+    real_no_stream = MiniSweRunner(
         model="m",
         base_url="http://x/v1",
         pool=["a"],
         n_per_worker=1,
-        runner_root=tmp_path / "real",
+        streaming=False,
+        runner_root=tmp_path / "real_ns",
     )
-    assert real.streams is False
+    assert real_no_stream.streams is False
+
+    real_stream = MiniSweRunner(
+        model="m",
+        base_url="http://x/v1",
+        pool=["a"],
+        n_per_worker=1,
+        streaming=True,
+        runner_root=tmp_path / "real_s",
+    )
+    assert real_stream.streams is True
 
 
 def test_event_sequence_includes_knee_when_guard_trips():

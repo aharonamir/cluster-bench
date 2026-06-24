@@ -81,6 +81,9 @@ ENV_OPENAI_BASE = "OPENAI_API_BASE"
 ENV_OPENAI_KEY = "OPENAI_API_KEY"
 
 
+_STREAMING_MODEL_CLASS = "clusterbench.streaming_model.StreamingLitellmModel"
+
+
 def build_cmd(
     *,
     level: int,
@@ -90,6 +93,7 @@ def build_cmd(
     subset: str = "verified",
     split: str = "test",
     step_limit: int = 0,
+    streaming: bool = False,
     extra_args: list[str] | None = None,
 ) -> list[str]:
     """Construct the `mini-extra swebench` invocation for one level (FR-1..FR-3).
@@ -98,6 +102,10 @@ def build_cmd(
     environment on the subprocess (see `env_for_subprocess`); the cmd itself
     just names the model so mini-swe-agent knows which LiteLLM route to hit.
     Step limit 0 = unlimited.
+
+    When streaming=True, passes --model-class pointing at StreamingLitellmModel
+    so every LLM call uses stream=True — making TTFT / cache-miss visible on
+    the proxy, matching real coding-agent behaviour (opencode, Claude Code).
 
     CLI flags verified against minisweagent 2.4.1 swebench.py:
       --filter  : regex matched against instance_id (re.match, anchored at start)
@@ -131,6 +139,8 @@ def build_cmd(
         "-o", str(out_dir),
         "--redo-existing",   # we already cleared out_dir; skip stale-check
     ]
+    if streaming:
+        cmd += ["--model-class", _STREAMING_MODEL_CLASS]
     if step_limit > 0:
         # Passing any -c replaces typer's default [swebench.yaml] list, so we
         # must re-include the base config before our override.
@@ -443,9 +453,9 @@ class MiniSweRunner:
     """
 
     name = "miniswe"
-    # mini-swe-agent 2.4.x is non-streaming (litellm.completion, full-response
-    # parse), so TTFT/TPOT/cache-miss are not measurable for its traffic.
-    streams = False
+    # streams is set to match the streaming config flag in __init__ so the
+    # dashboard can show TTFT/cache-miss when StreamingLitellmModel is active.
+    streams: bool = False
 
     def __init__(
         self,
@@ -471,6 +481,7 @@ class MiniSweRunner:
         self.split = split
         self.step_limit = step_limit
         self.streaming = streaming
+        self.streams = streaming  # Runner protocol flag — controls dashboard gauges
         self.api_key = api_key
         self.ssl_verify = ssl_verify
         self.timeout_s = timeout_s
@@ -490,6 +501,7 @@ class MiniSweRunner:
             subset=self.subset,
             split=self.split,
             step_limit=self.step_limit,
+            streaming=self.streaming,
         )
 
     async def run(self, level: int) -> LevelRunResult:
