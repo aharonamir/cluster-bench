@@ -411,37 +411,104 @@ async function exportPdf() {
     alert("Select a run in the Saved Reports list first.");
     return;
   }
-  const runId = ids[0]; // export the first selected run
+  const runId = ids[0];
 
   const btn = document.getElementById("export-pdf-btn");
   const orig = btn ? btn.textContent : "";
-  if (btn) { btn.textContent = "Fetching…"; btn.disabled = true; }
+  if (btn) { btn.textContent = "Loading…"; btn.disabled = true; }
 
   try {
-    const [reportResp, analyzeResp] = await Promise.all([
-      fetch(`/api/runs/${encodeURIComponent(runId)}`),
-      fetch(`/api/runs/${encodeURIComponent(runId)}/analyze`).catch(() => null),
-    ]);
-
+    // Fetch report JSON first (fast).
+    const reportResp = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
     if (!reportResp.ok) { alert("Could not load report."); return; }
     const report = await reportResp.json();
-    const analysis = analyzeResp && analyzeResp.ok
-      ? (await analyzeResp.json())
-      : null;
 
-    if (btn) btn.textContent = "Building PDF…";
-    const html = _buildPdfHtml(report, analysis);
+    // Open the print window now (must be synchronous with user gesture) and
+    // write a placeholder while the analysis streams in.
     const w = window.open("", "_blank");
     if (!w) { alert("Pop-up blocked — allow pop-ups for this page."); return; }
+
+    // Stream the LLM analysis via SSE, updating the print window live.
+    if (btn) btn.textContent = "Analyzing…";
+    const analysisPayload = await _streamAnalysis(runId, w, btn);
+
+    if (btn) btn.textContent = "Building PDF…";
+    const html = _buildPdfHtml(report, analysisPayload);
+    w.document.open();
     w.document.write(html);
     w.document.close();
-    // Give fonts + layout a moment, then trigger print dialog.
-    w.addEventListener("load", () => {
-      setTimeout(() => w.print(), 400);
-    });
+    w.addEventListener("load", () => setTimeout(() => w.print(), 400));
   } finally {
     if (btn) { btn.textContent = orig; btn.disabled = false; }
   }
+}
+
+/** Stream /api/runs/{id}/analyze SSE into a live preview in `win`.
+ *  Returns {analysis, model} when done, or null on error/no-LLM. */
+async function _streamAnalysis(runId, win, btn) {
+  // Write a live-streaming preview page into the popup while we wait.
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+<title>Analyzing…</title>
+<style>
+  body{font-family:system-ui,sans-serif;padding:2rem;background:#fff;color:#111}
+  h2{font-size:1rem;margin-bottom:1rem;color:#555}
+  #text{white-space:pre-wrap;font-size:10.5px;line-height:1.6;
+        background:#f8f8f8;padding:1rem;border-radius:4px;border:1px solid #ddd}
+  .spinner{display:inline-block;width:10px;height:10px;border:2px solid #aaa;
+           border-top-color:#333;border-radius:50%;animation:spin .7s linear infinite;
+           margin-left:6px;vertical-align:middle}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style></head><body>
+<h2>Generating LLM analysis <span class="spinner"></span></h2>
+<div id="text"></div></body></html>`);
+  win.document.close();
+
+  const tokens = [];
+  let model = "";
+  let errored = false;
+
+  try {
+    const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}/analyze`);
+    if (!resp.ok) return null;
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop(); // incomplete last chunk
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        try {
+          const obj = JSON.parse(line.slice(5).trim());
+          if (obj.type === "token") {
+            tokens.push(obj.text);
+            // Update live preview.
+            try {
+              const el = win.document.getElementById("text");
+              if (el) el.textContent = tokens.join("");
+            } catch (_) { /* window may have been closed */ }
+            if (btn) btn.textContent = `Analyzing… (${tokens.join("").length} chars)`;
+          } else if (obj.type === "done") {
+            model = obj.model || "";
+          } else if (obj.type === "error") {
+            errored = true;
+          }
+        } catch (_) { /* ignore parse errors */ }
+      }
+    }
+  } catch (_) {
+    errored = true;
+  }
+
+  if (errored || tokens.length === 0) return null;
+  return { analysis: tokens.join(""), model };
 }
 
 function _fmtVal(v, digits = 3) {

@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 import httpx
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -436,49 +436,75 @@ def _register_routes(
         return report.to_dict()
 
     @app.get("/api/runs/{run_id}/analyze")
-    async def analyze_run(run_id: str) -> dict[str, Any]:
-        """Call the configured LLM to analyze a completed run report.
+    async def analyze_run(run_id: str) -> StreamingResponse:
+        """Stream an LLM analysis of the run as Server-Sent Events.
 
-        Returns {analysis: str, model: str}. Never exposes the api_key.
-        Returns 503 when no LLM is configured (mock path with no base_url).
+        Each SSE event is one of:
+          data: {"type":"token","text":"..."}   — a chunk of analysis text
+          data: {"type":"done","model":"..."}   — stream finished
+          data: {"type":"error","detail":"..."}  — failure
+
+        Uses stream:true so even slow models (kimi-k2-r1 etc.) start
+        returning tokens immediately without a ReadTimeout.
         """
         report = load_report(state.results_dir, run_id)
         if report is None:
             raise HTTPException(status_code=404, detail="run_not_found")
         if not state._llm_base_url or not state._api_key:
-            raise HTTPException(
-                status_code=503,
-                detail="no_llm_configured",
-            )
+            raise HTTPException(status_code=503, detail="no_llm_configured")
+
         model = state.run_defaults.get("model", "gpt-4o-mini")
         prompt = _build_analysis_prompt(report)
-        try:
-            async with httpx.AsyncClient(
-                base_url=state._llm_base_url,
-                headers={"Authorization": f"Bearer {state._api_key}"},
-                verify=state.ssl_verify,
-                timeout=120.0,
-            ) as client:
-                resp = await client.post(
-                    "/chat/completions",
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "stream": False,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"llm_error: {exc.response.status_code}",
-            ) from exc
-        except httpx.RequestError as exc:
-            raise HTTPException(status_code=502, detail=f"llm_unreachable: {exc}") from exc
+        log.info(
+            "analyze: run_id=%s model=%s base_url=%s prompt_len=%d",
+            run_id, model, state._llm_base_url, len(prompt),
+        )
 
-        analysis = data["choices"][0]["message"]["content"]
-        return {"analysis": analysis, "model": model}
+        import json as _json
+
+        async def _sse_stream():
+            try:
+                async with httpx.AsyncClient(
+                    base_url=state._llm_base_url,
+                    headers={"Authorization": f"Bearer {state._api_key}"},
+                    verify=state.ssl_verify,
+                    timeout=httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=5.0),
+                ) as client:
+                    async with client.stream(
+                        "POST",
+                        "/chat/completions",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "stream": True,
+                        },
+                    ) as resp:
+                        log.info("analyze: response status=%d run_id=%s", resp.status_code, run_id)
+                        if resp.status_code != 200:
+                            body = await resp.aread()
+                            log.warning("analyze: llm error status=%d body=%s", resp.status_code, body[:200])
+                            yield f"data: {_json.dumps({'type':'error','detail':f'llm_error:{resp.status_code}'})}\n\n"
+                            return
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data:"):
+                                continue
+                            chunk = line[5:].strip()
+                            if chunk == "[DONE]":
+                                break
+                            try:
+                                obj = _json.loads(chunk)
+                                text = obj["choices"][0]["delta"].get("content", "")
+                                if text:
+                                    yield f"data: {_json.dumps({'type':'token','text':text})}\n\n"
+                            except Exception:
+                                pass
+                yield f"data: {_json.dumps({'type':'done','model':model})}\n\n"
+            except httpx.RequestError as exc:
+                log.warning("analyze: llm unreachable run_id=%s type=%s error=%r",
+                            run_id, type(exc).__name__, exc)
+                yield f"data: {_json.dumps({'type':'error','detail':f'llm_unreachable:{type(exc).__name__}'})}\n\n"
+
+        return StreamingResponse(_sse_stream(), media_type="text/event-stream")
 
     @app.get("/")
     async def index() -> HTMLResponse:
