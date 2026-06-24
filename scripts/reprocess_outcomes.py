@@ -32,7 +32,7 @@ from clusterbench.orchestrator import resolve_outcome
 
 def _outcome_counts_from_out_dir(
     out_dir: Path, pass_rate: float, n_tasks: int
-) -> dict[str, int] | None:
+) -> tuple[dict[str, int], float] | None:
     """Re-derive outcome_counts for one level.
 
     We don't re-run the swebench scorer here. Instead we estimate the resolved
@@ -52,17 +52,17 @@ def _outcome_counts_from_out_dir(
         return None
 
     # Recover which instances were resolved from the stored pass_rate.
-    # Sort by instance_id (deterministic) and mark the first `resolved_n` as
-    # resolved — this matches what the scorer would have produced for a fixed
-    # pool (same instances, same order).  It isn't perfect, but it keeps the
-    # overall pass_rate intact while correctly splitting non-resolved into
-    # timeout / agent_error / unresolved.
+    # resolved_n is the original scorer's verdict: pass_rate * n_tasks.
+    # Only submitted (non-timed-out, non-error) instances can be resolved.
+    # If resolved_n > len(submitted_ids), the original pass_rate was inflated
+    # by misclassified timeouts — clamp and update pass_rate to stay consistent.
     resolved_n = round(pass_rate * n_tasks)
     submitted_ids = {
         r.instance_id
         for r in process_records
         if not r.timed_out and r.return_status in (None, 0)
     }
+    resolved_n = min(resolved_n, len(submitted_ids))
     # Sort submitted instances to get a stable resolved set.
     resolved_ids = set(sorted(submitted_ids)[:resolved_n])
 
@@ -71,7 +71,12 @@ def _outcome_counts_from_out_dir(
         resolved = record.instance_id in resolved_ids
         outcome = resolve_outcome(record, resolved=resolved)
         counts[outcome.value] = counts.get(outcome.value, 0) + 1
-    return counts
+
+    # Recompute pass_rate to match the corrected resolved count.
+    actual_resolved = counts.get("resolved", 0)
+    new_pass_rate = actual_resolved / n_tasks if n_tasks > 0 else 0.0
+
+    return counts, new_pass_rate
 
 
 def _find_out_dir(
@@ -133,19 +138,23 @@ def reprocess(results_dir: Path, miniswe_dir: Path, *, dry_run: bool = False) ->
             if out_dir is None:
                 continue
 
-            new_counts = _outcome_counts_from_out_dir(out_dir, pass_rate, n_tasks)
-            if new_counts is None:
+            result = _outcome_counts_from_out_dir(out_dir, pass_rate, n_tasks)
+            if result is None:
                 continue  # no YAML → nothing to fix
 
+            new_counts, new_pass_rate = result
             old_counts = lvl.get("outcome_counts", {})
-            if old_counts == new_counts:
+            old_pass_rate = lvl.get("pass_rate", 0.0)
+            if old_counts == new_counts and abs(old_pass_rate - new_pass_rate) < 1e-9:
                 continue
 
             print(
                 f"  {report_path.name} level={level}: "
-                f"{old_counts} → {new_counts}"
+                f"outcomes {old_counts} → {new_counts} | "
+                f"pass_rate {old_pass_rate:.4f} → {new_pass_rate:.4f}"
             )
             lvl["outcome_counts"] = new_counts
+            lvl["pass_rate"] = new_pass_rate
             changed = True
 
         if changed and not dry_run:
