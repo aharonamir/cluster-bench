@@ -392,8 +392,9 @@ class LiteLLMSource:
         queue_p95: float | None = None
         if SERIES_QUEUE_TIME in start.raw and SERIES_QUEUE_TIME in end.raw:
             queue_buckets = _histogram_delta(start, end, SERIES_QUEUE_TIME)
-            queue_p50 = percentile_at_bucket_edge(queue_buckets, 0.50)
-            queue_p95 = percentile_at_bucket_edge(queue_buckets, 0.95)
+            if queue_buckets.get(float("inf"), 0) > 0:
+                queue_p50 = percentile_at_bucket_edge(queue_buckets, 0.50)
+                queue_p95 = percentile_at_bucket_edge(queue_buckets, 0.95)
 
         # Process-health gauges — take end-of-level snapshot (not delta).
         rss_bytes = end.raw.get(SERIES_PROC_RSS, 0.0)

@@ -1367,7 +1367,7 @@ function renderLiteLLMTable(runs) {
         run.name,
         lv.level,
         fmt(d ? d.in_flight_peak : null, 0),
-        fmt(d ? d.proc_overhead_s : null),
+        fmt(d && d.proc_overhead_s != null ? d.proc_overhead_s * 1000 : null, 1),
         fmt(d && d.queue_p50 != null ? d.queue_p50 * 1000 : null, 1),
         fmt(d && d.queue_p95 != null ? d.queue_p95 * 1000 : null, 1),
         streamingOnlyCell(lv, "rss_mb", (v) => v.toFixed(1)),
