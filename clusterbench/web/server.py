@@ -632,7 +632,8 @@ _DEFAULT_INDEX_HTML = """<!doctype html>
 
 def _build_analysis_prompt(report: "RunReport") -> str:
     """Build a structured prompt asking the LLM to analyze a benchmark report."""
-    from clusterbench.models import RunReport  # local to avoid circular at module level
+    def _f(v: float | None, fmt: str = ".3f") -> str:
+        return f"{v:{fmt}}" if v is not None else "n/a"
 
     lines: list[str] = []
     lines.append(
@@ -640,19 +641,24 @@ def _build_analysis_prompt(report: "RunReport") -> str:
         "Review the following ClusterBench saturation sweep report and provide a concise "
         "technical analysis covering:\n"
         "1. Throughput scaling and where it plateaus\n"
-        "2. Latency behaviour under load (p50/p95/p99 trend)\n"
-        "3. TTFT trends (if available) and what they reveal about queuing vs GPU saturation\n"
-        "4. The saturation knee — at which concurrency level does the cluster start to degrade "
-        "and what is the primary signal (latency, error rate, TTFT spike)?\n"
-        "5. Outcome taxonomy — are timeouts or errors concentrated at specific concurrency levels?\n"
-        "6. Specific recommendations for the inference cluster operator: what to change or test "
-        "next (e.g. batch size, number of replicas, model parallelism, KV-cache tuning)\n\n"
+        "2. Latency behaviour under load (p50/p99 trend)\n"
+        "3. TTFT and TPOT trends (if available) — TTFT reveals queueing, TPOT reveals GPU "
+        "decode saturation; a rising TPOT means the GPU cannot keep up with decode demand\n"
+        "4. KV-cache miss count — high cache misses suggest prompts are not being reused; "
+        "recommend prefix caching or request routing if relevant\n"
+        "5. The saturation knee — at which concurrency level does the cluster start to degrade "
+        "and what is the primary signal (latency, error rate, TTFT spike, TPOT rise)?\n"
+        "6. Outcome taxonomy — are timeouts or errors concentrated at specific concurrency levels?\n"
+        "7. Specific recommendations for the inference cluster operator: what to change or test "
+        "next (e.g. batch size, number of replicas, model parallelism, KV-cache tuning, "
+        "prefix caching, chunked prefill)\n\n"
         "Be specific and cite the numbers from the data below.\n\n"
     )
 
     cfg = report.config
     lines.append(f"## Run: {report.name or report.run_id}")
     lines.append(f"Mode: {cfg.mode.value} | Model: {cfg.miniswe.model} | "
+                 f"Streaming: {cfg.miniswe.streaming} | "
                  f"TTFT available: {report.ttft_available} | "
                  f"Wire metrics: {report.wire_metrics_available}")
     if report.knee:
@@ -665,8 +671,9 @@ def _build_analysis_prompt(report: "RunReport") -> str:
     lines.append("## Per-level statistics")
     header = (
         f"{'level':>6}  {'n':>5}  {'pass%':>6}  "
-        f"{'tok/s':>7}  {'lat_p50':>8}  {'lat_p95':>8}  {'lat_p99':>8}  "
+        f"{'tok/s':>7}  {'lat_p50':>8}  {'lat_p99':>8}  "
         f"{'ttft_p50':>9}  {'ttft_p95':>9}  "
+        f"{'tpot_ms':>8}  {'c_miss':>7}  "
         f"{'inflight':>8}  {'err%':>6}  {'wall_s':>7}  outcomes"
     )
     lines.append(header)
@@ -676,13 +683,14 @@ def _build_analysis_prompt(report: "RunReport") -> str:
         outcomes_str = " ".join(f"{k}:{v}" for k, v in sorted((lv.outcome_counts or {}).items()))
         lines.append(
             f"{lv.level:>6}  {lv.n_tasks:>5}  {lv.pass_rate*100:>5.1f}%  "
-            f"{(d.throughput_tps if d else None) or 0:>7.1f}  "
-            f"{(d.lat_p50 if d else None) or '—':>8}  "
-            f"{(d.lat_p95 if d else None) or '—':>8}  "
-            f"{(d.lat_p99 if d else None) or '—':>8}  "
-            f"{(d.ttft_p50 if d else None) or '—':>9}  "
-            f"{(d.ttft_p95 if d else None) or '—':>9}  "
-            f"{(d.in_flight_peak if d else None) or '—':>8}  "
+            f"{_f(d.throughput_tps if d else None, '.1f'):>7}  "
+            f"{_f(d.lat_p50 if d else None):>8}  "
+            f"{_f(d.lat_p99 if d else None):>8}  "
+            f"{_f(d.ttft_p50 if d else None):>9}  "
+            f"{_f(d.ttft_p95 if d else None):>9}  "
+            f"{_f(d.tpot_ms if d else None, '.1f'):>8}  "
+            f"{str(d.cache_misses if d else None) if (d and d.cache_misses is not None) else 'n/a':>7}  "
+            f"{_f(d.in_flight_peak if d else None, '.1f'):>8}  "
             f"{((d.error_rate or 0)*100 if d else 0):>5.1f}%  "
             f"{lv.duration_s:>7.1f}  {outcomes_str}"
         )

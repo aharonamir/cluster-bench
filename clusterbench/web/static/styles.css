@@ -667,6 +667,7 @@ thead th[colspan] {
   border-bottom: 1px solid var(--line);
 }
 tbody td:first-child, tbody td:nth-child(2) { text-align: left; }
+thead th:first-child, thead th:nth-child(2) { text-align: left; }
 tbody tr { transition: background 0.1s ease; }
 tbody tr:hover { background: var(--surface-2); }
 

@@ -345,11 +345,35 @@ class LiteLLMSource:
         # _histogram_delta treats a missing series as a zero baseline, which is
         # correct since no streaming before the start scrape means nothing to
         # subtract. end.ttft_available=False (streaming off) still → None.
+        tpot_ms: float | None = None
         if end.ttft_available:
             ttft_buckets = _histogram_delta(start, end, SERIES_TTFT)
             if ttft_buckets.get(float("inf"), 0) > 0:
                 ttft_p50 = percentile_at_bucket_edge(ttft_buckets, 0.50)
                 ttft_p95 = percentile_at_bucket_edge(ttft_buckets, 0.95)
+
+                _lat_key = (
+                    SERIES_LATENCY_E2E_REAL
+                    if SERIES_LATENCY_E2E_REAL in start.raw and SERIES_LATENCY_E2E_REAL in end.raw
+                    else SERIES_LATENCY_E2E
+                )
+                lat_count = (end.raw.get(_lat_key, {}).get("count", 0)
+                             - start.raw.get(_lat_key, {}).get("count", 0))
+                lat_sum = (end.raw.get(_lat_key, {}).get("sum", 0.0)
+                           - start.raw.get(_lat_key, {}).get("sum", 0.0))
+                ttft_count = (end.raw.get(SERIES_TTFT, {}).get("count", 0)
+                              - start.raw.get(SERIES_TTFT, {}).get("count", 0))
+                ttft_sum = (end.raw.get(SERIES_TTFT, {}).get("sum", 0.0)
+                            - start.raw.get(SERIES_TTFT, {}).get("sum", 0.0))
+                if lat_count > 0 and ttft_count > 0 and out_tokens > 0:
+                    avg_lat = lat_sum / lat_count
+                    avg_ttft = ttft_sum / ttft_count
+                    avg_out_tok = out_tokens / ttft_count
+                    gen_s = max(0.0, avg_lat - avg_ttft)
+                    if avg_out_tok > 0:
+                        tpot_ms = round(gen_s / avg_out_tok * 1000.0, 1)
+
+        cache_misses = int(max(0.0, _counter_delta(start, end, SERIES_CACHE_MISSES)))
 
         # FR-16: queue time directly measured when the series is present in both
         # scrapes (real LiteLLM); None otherwise (mock).
@@ -385,6 +409,8 @@ class LiteLLMSource:
             suspect=suspect,
             queue_p50=queue_p50,
             queue_p95=queue_p95,
+            tpot_ms=tpot_ms,
+            cache_misses=cache_misses if cache_misses > 0 else None,
         )
 
 

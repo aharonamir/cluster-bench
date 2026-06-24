@@ -6,7 +6,7 @@ the producers and consumers.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Any
 
@@ -192,13 +192,16 @@ class LevelDelta:
     suspect: bool = False  # counter-reset guard (FR-10)
     queue_p50: float | None = None
     queue_p95: float | None = None
+    tpot_ms: float | None = None
+    cache_misses: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "LevelDelta":
-        return cls(**d)
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 @dataclass

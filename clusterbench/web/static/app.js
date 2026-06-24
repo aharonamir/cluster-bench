@@ -625,10 +625,11 @@ function _buildPdfHtml(report, analysisPayload) {
       <td>${((lv.pass_rate || 0) * 100).toFixed(1)}%</td>
       <td>${_fmtVal(d.throughput_tps, 1)}</td>
       <td>${_fmtVal(d.lat_p50)}</td>
-      <td>${_fmtVal(d.lat_p95)}</td>
       <td>${_fmtVal(d.lat_p99)}</td>
       <td>${_fmtVal(d.ttft_p50)}</td>
       <td>${_fmtVal(d.ttft_p95)}</td>
+      <td>${d.tpot_ms != null ? d.tpot_ms.toFixed(1) : "—"}</td>
+      <td>${d.cache_misses != null ? d.cache_misses : "—"}</td>
       <td>${_fmtVal(d.in_flight_peak, 0)}</td>
       <td>${_fmtVal(d.error_rate ? d.error_rate * 100 : 0, 1)}%</td>
       <td>${_fmtVal(lv.duration_s, 1)}s</td>
@@ -733,8 +734,9 @@ function _buildPdfHtml(report, analysisPayload) {
     <thead>
       <tr>
         <th>level</th><th>n</th><th>pass%</th><th>tok/s</th>
-        <th>lat p50</th><th>lat p95</th><th>lat p99</th>
+        <th>lat p50</th><th>lat p99</th>
         <th>TTFT p50</th><th>TTFT p95</th>
+        <th>TPOT (ms)</th><th>cache miss</th>
         <th>in-flight</th><th>err%</th><th>wall</th><th>outcomes</th>
       </tr>
     </thead>
@@ -1474,8 +1476,9 @@ function renderLevelTable() {
         ttftCell(lv, "p50"),
         ttftCell(lv, "p95"),
         latencyCell(lv, "p50"),
-        latencyCell(lv, "p95"),
         latencyCell(lv, "p99"),
+        streamingOnlyCell(lv, "tpot_ms", (v) => v.toFixed(1) + " ms"),
+        streamingOnlyCell(lv, "cache_misses", (v) => String(v)),
         fmt(lv.delta ? lv.delta.throughput_tps : null, 1),
         fmt((lv.pass_rate || 0) * 100, 1) + "%",
         fmt((lv.delta ? lv.delta.error_rate || 0 : 0) * 100, 1) + "%",
@@ -1508,6 +1511,13 @@ function latencyCell(lv, key) {
   if (!lv.delta) return "—";
   const v = lv.delta[`lat_${key}`];
   return fmt(v);
+}
+
+function streamingOnlyCell(lv, field, render) {
+  if (!lv.delta) return "—";
+  const v = lv.delta[field];
+  if (v == null) return { __html: '<span class="ttft-na">n/a</span>' };
+  return render(v);
 }
 
 function outcomesCell(counts) {
