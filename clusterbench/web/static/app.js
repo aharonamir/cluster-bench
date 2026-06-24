@@ -401,6 +401,195 @@ function clearOverlay() {
 }
 
 // ---------------------------------------------------------------------
+// Export PDF
+// ---------------------------------------------------------------------
+
+async function exportPdf() {
+  const sel = document.getElementById("saved-select");
+  const ids = sel ? Array.from(sel.selectedOptions).map((o) => o.value) : [];
+  if (ids.length === 0) {
+    alert("Select a run in the Saved Reports list first.");
+    return;
+  }
+  const runId = ids[0]; // export the first selected run
+
+  const btn = document.getElementById("export-pdf-btn");
+  const orig = btn ? btn.textContent : "";
+  if (btn) { btn.textContent = "Fetching…"; btn.disabled = true; }
+
+  try {
+    const [reportResp, analyzeResp] = await Promise.all([
+      fetch(`/api/runs/${encodeURIComponent(runId)}`),
+      fetch(`/api/runs/${encodeURIComponent(runId)}/analyze`).catch(() => null),
+    ]);
+
+    if (!reportResp.ok) { alert("Could not load report."); return; }
+    const report = await reportResp.json();
+    const analysis = analyzeResp && analyzeResp.ok
+      ? (await analyzeResp.json())
+      : null;
+
+    if (btn) btn.textContent = "Building PDF…";
+    const html = _buildPdfHtml(report, analysis);
+    const w = window.open("", "_blank");
+    if (!w) { alert("Pop-up blocked — allow pop-ups for this page."); return; }
+    w.document.write(html);
+    w.document.close();
+    // Give fonts + layout a moment, then trigger print dialog.
+    w.addEventListener("load", () => {
+      setTimeout(() => w.print(), 400);
+    });
+  } finally {
+    if (btn) { btn.textContent = orig; btn.disabled = false; }
+  }
+}
+
+function _fmtVal(v, digits = 3) {
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "number") return v.toFixed(digits);
+  return String(v);
+}
+
+function _buildPdfHtml(report, analysisPayload) {
+  const levels = (report.levels || []).slice().sort((a, b) => a.level - b.level);
+  const name = report.name || report.run_id;
+  const model = (report.config && report.config.miniswe && report.config.miniswe.model) || "—";
+  const mode = (report.config && report.config.mode) || "—";
+  const knee = report.knee
+    ? `Level ${report.knee.level} — ${report.knee.reason || ""}`
+    : "none detected";
+  const finishedAt = report.finished_at ? new Date(report.finished_at).toLocaleString() : "—";
+
+  // Per-level table rows
+  const tableRows = levels.map((lv) => {
+    const d = lv.delta || {};
+    const oc = lv.outcome_counts || {};
+    const ocStr = Object.entries(oc).sort().map(([k, v]) => `${k}: ${v}`).join(", ") || "—";
+    return `<tr>
+      <td>${lv.level}</td>
+      <td>${lv.n_tasks}</td>
+      <td>${((lv.pass_rate || 0) * 100).toFixed(1)}%</td>
+      <td>${_fmtVal(d.throughput_tps, 1)}</td>
+      <td>${_fmtVal(d.lat_p50)}</td>
+      <td>${_fmtVal(d.lat_p95)}</td>
+      <td>${_fmtVal(d.lat_p99)}</td>
+      <td>${_fmtVal(d.ttft_p50)}</td>
+      <td>${_fmtVal(d.ttft_p95)}</td>
+      <td>${_fmtVal(d.in_flight_peak, 0)}</td>
+      <td>${_fmtVal(d.error_rate ? d.error_rate * 100 : 0, 1)}%</td>
+      <td>${_fmtVal(lv.duration_s, 1)}s</td>
+      <td class="outcomes">${ocStr}</td>
+    </tr>`;
+  }).join("");
+
+  // Capture SVG charts currently rendered in the dashboard
+  const chartIds = ["chart-ttft", "chart-latency", "chart-saturation", "chart-litellm", "chart-taxonomy"];
+  const chartLabels = {
+    "chart-ttft": "TTFT — agents vs first-token latency",
+    "chart-latency": "Latency — agents vs end-to-end latency",
+    "chart-saturation": "Saturation curve — throughput vs concurrency",
+    "chart-litellm": "LiteLLM saturation — in-flight & overhead",
+    "chart-taxonomy": "Outcome taxonomy",
+  };
+  const svgSections = chartIds.map((id) => {
+    const el = document.getElementById(id);
+    if (!el) return "";
+    const serializer = new XMLSerializer();
+    const svgStr = serializer.serializeToString(el);
+    return `<div class="chart-block">
+      <h3>${chartLabels[id] || id}</h3>
+      <div class="svg-wrap">${svgStr}</div>
+    </div>`;
+  }).join("\n");
+
+  const analysisHtml = analysisPayload
+    ? `<section class="analysis">
+        <h2>LLM Analysis <span class="model-tag">${analysisPayload.model}</span></h2>
+        <pre class="analysis-body">${analysisPayload.analysis.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+      </section>`
+    : `<section class="analysis">
+        <h2>LLM Analysis</h2>
+        <p class="na">Not available — no LLM configured on this server (mock path).</p>
+      </section>`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClusterBench Report — ${name}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, sans-serif; font-size: 11px;
+         color: #111; background: #fff; padding: 1.5rem 2rem; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
+  h3 { font-size: 0.85rem; color: #444; margin: 0.8rem 0 0.3rem; }
+  .meta { color: #555; font-size: 0.9em; margin-bottom: 1rem; }
+  .meta span { margin-right: 1.2rem; }
+  .knee { color: #c0392b; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 0.5rem; }
+  th { background: #f0f0f0; text-align: left; padding: 3px 6px; border: 1px solid #ccc; white-space: nowrap; }
+  td { padding: 2px 6px; border: 1px solid #ddd; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.outcomes { white-space: normal; font-size: 9px; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .chart-block { margin: 1rem 0; page-break-inside: avoid; }
+  .svg-wrap svg { width: 100%; height: auto; max-height: 280px; display: block; }
+  /* Re-skin SVG text for print — the dashboard uses light-on-dark */
+  .svg-wrap svg text { fill: #222 !important; }
+  .svg-wrap svg line, .svg-wrap svg path { stroke: #666; }
+  .analysis { margin-top: 1.5rem; }
+  .model-tag { font-size: 0.7em; background: #eef; padding: 1px 6px; border-radius: 3px;
+               color: #336; margin-left: 0.5rem; vertical-align: middle; }
+  .analysis-body { white-space: pre-wrap; font-family: inherit; font-size: 10.5px;
+                   line-height: 1.6; background: #f8f8f8; padding: 1rem; border-radius: 4px;
+                   border: 1px solid #ddd; margin-top: 0.5rem; }
+  .na { color: #888; font-style: italic; }
+  @media print {
+    body { padding: 0.5rem; }
+    h2 { page-break-before: auto; }
+    .chart-block { page-break-inside: avoid; }
+    .analysis { page-break-before: auto; }
+  }
+</style>
+</head>
+<body>
+<h1>ClusterBench — ${name}</h1>
+<div class="meta">
+  <span>Run ID: <code>${report.run_id}</code></span>
+  <span>Mode: ${mode}</span>
+  <span>Model: <strong>${model}</strong></span>
+  <span>Finished: ${finishedAt}</span>
+  <span>TTFT available: ${report.ttft_available ? "yes" : "no"}</span>
+  <span>Wire metrics: ${report.wire_metrics_available ? "yes" : "no"}</span>
+  <span class="knee">Knee: ${knee}</span>
+</div>
+
+<section>
+  <h2>Per-level statistics</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>level</th><th>n</th><th>pass%</th><th>tok/s</th>
+        <th>lat p50</th><th>lat p95</th><th>lat p99</th>
+        <th>TTFT p50</th><th>TTFT p95</th>
+        <th>in-flight</th><th>err%</th><th>wall</th><th>outcomes</th>
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Charts</h2>
+  ${svgSections}
+</section>
+
+${analysisHtml}
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------
 // Controls: start a run
 // ---------------------------------------------------------------------
 
@@ -1434,6 +1623,8 @@ function wire() {
   if (clearBtn) clearBtn.addEventListener("click", clearOverlay);
   const refreshBtn = document.getElementById("refresh-btn");
   if (refreshBtn) refreshBtn.addEventListener("click", refreshSavedList);
+  const exportPdfBtn = document.getElementById("export-pdf-btn");
+  if (exportPdfBtn) exportPdfBtn.addEventListener("click", exportPdf);
 
   initTabs();
   loadConfig();

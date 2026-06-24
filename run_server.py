@@ -185,6 +185,8 @@ def build_app(cfg: ServerConfig):
         source_factory=source_factory,
         real=cfg.real,
         ssl_verify=cfg.ssl_verify,
+        api_key=cfg.api_key or "",
+        llm_base_url=cfg.base_url or "",
         run_defaults={
             "model": cfg.model,
             "streaming": cfg.streaming,
