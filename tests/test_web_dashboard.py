@@ -193,7 +193,7 @@ def test_load_saved_report_renders_all_charts(tmp_path: Path):
                     "() => document.querySelectorAll('#chart-saturation circle').length > 0"
                 )
                 await page.wait_for_function(
-                    "() => document.querySelectorAll('#chart-litellm rect').length > 0"
+                    "() => document.querySelectorAll('#litellm-table-body tr').length > 0"
                 )
                 await page.wait_for_function(
                     "() => document.querySelectorAll('#level-table-body tr').length > 0"

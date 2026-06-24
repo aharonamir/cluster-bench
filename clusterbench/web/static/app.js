@@ -646,12 +646,11 @@ function _buildPdfHtml(report, analysisPayload) {
   state.activeRun = null;
   renderAll();
 
-  const chartIds = ["chart-ttft", "chart-latency", "chart-saturation", "chart-litellm", "chart-taxonomy"];
+  const chartIds = ["chart-ttft", "chart-latency", "chart-saturation", "chart-taxonomy"];
   const chartLabels = {
     "chart-ttft": "TTFT — agents vs first-token latency",
     "chart-latency": "Latency — agents vs end-to-end latency",
     "chart-saturation": "Saturation curve — throughput vs concurrency",
-    "chart-litellm": "LiteLLM saturation — in-flight & overhead",
     "chart-taxonomy": "Outcome taxonomy",
   };
   const svgSections = chartIds.map((id) => {
@@ -1354,6 +1353,47 @@ function drawLitellmPanel(svg, { width, height }, runs) {
   return detectPreHandlerQueueing(runs);
 }
 
+function renderLiteLLMTable(runs) {
+  const tbody = document.getElementById("litellm-table-body");
+  if (!tbody) return null;
+  tbody.innerHTML = "";
+  for (const run of runs) {
+    for (const lv of run.levels.slice().sort((a, b) => a.level - b.level)) {
+      const d = lv.delta;
+      const fdPct = (d && d.open_fds != null && d.max_fds != null)
+        ? (d.open_fds / d.max_fds * 100).toFixed(1) + "%"
+        : "—";
+      const cells = [
+        run.name,
+        lv.level,
+        fmt(d ? d.in_flight_peak : null, 0),
+        fmt(d ? d.proc_overhead_s : null),
+        fmt(d && d.queue_p50 != null ? d.queue_p50 * 1000 : null, 1),
+        fmt(d && d.queue_p95 != null ? d.queue_p95 * 1000 : null, 1),
+        streamingOnlyCell(lv, "rss_mb", (v) => v.toFixed(1)),
+        streamingOnlyCell(lv, "open_fds", (v) => String(v)),
+        streamingOnlyCell(lv, "max_fds", (v) => String(v)),
+        d ? fdPct : "—",
+        streamingOnlyCell(lv, "gc_gen1", (v) => String(v)),
+        streamingOnlyCell(lv, "gc_gen2", (v) => String(v)),
+      ];
+      const tr = document.createElement("tr");
+      if (run.knee && run.knee.level === lv.level) tr.classList.add("knee");
+      for (const c of cells) {
+        const td = document.createElement("td");
+        if (c && typeof c === "object" && c.__html) {
+          td.innerHTML = c.__html;
+        } else {
+          td.textContent = c;
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  }
+  return detectPreHandlerQueueing(runs);
+}
+
 function detectPreHandlerQueueing(runs) {
   // Heuristic: if in_flight_peak stays low (below 2× the lowest level) but
   // p99 latency climbs steeply (≥2× between adjacent levels), there's likely
@@ -1733,11 +1773,7 @@ function renderAll() {
     (lv) => lv.delta ? lv.delta.throughput_tps : null,
     { yLabel: "tokens/sec", yDigits: 0, showKnee: true }
   );
-  const flags = drawLitellmPanel(
-    document.getElementById("chart-litellm"),
-    { width: W, height: H },
-    runs
-  );
+  const flags = renderLiteLLMTable(runs);
   drawTaxonomy(
     document.getElementById("chart-taxonomy"),
     { width: W, height: 280 },

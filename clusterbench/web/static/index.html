@@ -140,8 +140,33 @@
 
       <!-- LiteLLM -->
       <div class="tab-panel" data-tab="litellm">
-        <div class="panel-subhead"><span class="eyebrow">proxy-side · not GPU-side</span> LiteLLM saturation <span class="hint">in-flight peak + processing overhead</span></div>
-        <svg id="chart-litellm" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="panel-subhead"><span class="eyebrow">proxy-side · not GPU-side</span> LiteLLM proxy &amp; process health <span class="hint">per-level snapshot</span></div>
+        <div class="table-scroll">
+          <table id="litellm-table">
+            <thead>
+              <tr>
+                <th rowspan="2" title="Name of the run">run</th>
+                <th rowspan="2" title="Number of concurrent agents (workers) in this level">level</th>
+                <th rowspan="2" title="Peak concurrent in-flight requests observed at the LiteLLM proxy. Low values with rising latency suggest pre-handler queueing the proxy cannot see.">in-flight peak</th>
+                <th rowspan="2" title="LiteLLM proxy processing overhead p50 — time spent inside the proxy before and after the LLM API call, health-check traffic excluded. Rising overhead means the proxy process itself is CPU-bound.">overhead p50 (s)</th>
+                <th colspan="2" title="Pre-handler queue time — how long requests wait before the LiteLLM ASGI handler picks them up. Rises sharply when the proxy is saturated. n/a when LiteLLM does not expose the queue-time series.">queue (ms)</th>
+                <th rowspan="2" title="Resident Set Size of the LiteLLM proxy process at the end of the level (MB). Growing RSS across concurrency levels may indicate KV-cache pressure or a memory leak in the proxy.">RSS (MB)</th>
+                <th colspan="2" title="Open and maximum file descriptors for the LiteLLM proxy process at the end of the level. Climbing open FDs under load indicate a connection-pool leak; approaching max_fds will cause connection failures.">file descriptors</th>
+                <th rowspan="2" title="open_fds ÷ max_fds × 100. Values above ~80 % are a risk factor for connection failures under continued load.">FD %</th>
+                <th colspan="2" title="Python garbage-collector collections during the level (gen0 excluded — too frequent). Elevated gen1 counts suggest medium-lived object churn; any gen2 activity indicates long-lived object pressure and a potential memory leak.">GC collections</th>
+              </tr>
+              <tr>
+                <th title="50th percentile (median) pre-handler queue latency">p50</th>
+                <th title="95th percentile pre-handler queue latency">p95</th>
+                <th title="Open file descriptors at end of level">open</th>
+                <th title="OS-level file descriptor limit for the process">max</th>
+                <th title="Python generation-1 GC collections during the level — medium-lived objects">gen1</th>
+                <th title="Python generation-2 GC collections during the level — long-lived objects; any gen2 activity warrants investigation">gen2</th>
+              </tr>
+            </thead>
+            <tbody id="litellm-table-body"></tbody>
+          </table>
+        </div>
         <div id="queue-annotation" class="annotation"></div>
       </div>
 

@@ -666,6 +666,7 @@ thead th[colspan] {
   color: var(--text-mute);
   border-bottom: 1px solid var(--line);
 }
+thead th[rowspan] { vertical-align: bottom; }
 tbody td:first-child, tbody td:nth-child(2) { text-align: left; }
 thead th:first-child, thead th:nth-child(2) { text-align: left; }
 tbody tr { transition: background 0.1s ease; }
