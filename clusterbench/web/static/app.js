@@ -646,11 +646,12 @@ function _buildPdfHtml(report, analysisPayload) {
   state.activeRun = null;
   renderAll();
 
-  const chartIds = ["chart-ttft", "chart-latency", "chart-saturation", "chart-taxonomy"];
+  const chartIds = ["chart-ttft", "chart-latency", "chart-saturation", "chart-interactivity", "chart-taxonomy"];
   const chartLabels = {
     "chart-ttft": "TTFT — agents vs first-token latency",
     "chart-latency": "Latency — agents vs end-to-end latency",
     "chart-saturation": "Saturation curve — throughput vs concurrency",
+    "chart-interactivity": "Interactivity frontier — tok/s per user vs total tok/s",
     "chart-taxonomy": "Outcome taxonomy",
   };
   const svgSections = chartIds.map((id) => {
@@ -1498,6 +1499,114 @@ function drawTaxonomy(svg, { width, height }, runs) {
 }
 
 // ---------------------------------------------------------------------
+// SVG: interactivity frontier (tok/s per user vs total tok/s)
+// ---------------------------------------------------------------------
+
+function drawInteractivityChart(svg, { width, height }, runs) {
+  clearSvg(svg);
+  if (runs.length === 0 || runs.every((r) => r.levels.length === 0)) {
+    drawEmptyState(svg, width, height, "no data yet");
+    return;
+  }
+
+  // Build points: x = avg_output_tokens / lat_pXX (tok/s/user), y = throughput_tps
+  const runData = [];
+  for (const run of runs) {
+    const sorted = run.levels.slice().sort((a, b) => a.level - b.level);
+    const p50pts = [], p95pts = [];
+    for (const lv of sorted) {
+      const d = lv.delta;
+      if (!d || d.avg_output_tokens == null) continue;
+      const tok = d.avg_output_tokens;
+      if (d.lat_p50 > 0) p50pts.push({ x: tok / d.lat_p50, y: d.throughput_tps, level: lv.level });
+      if (d.lat_p95 > 0) p95pts.push({ x: tok / d.lat_p95, y: d.throughput_tps, level: lv.level });
+    }
+    if (p50pts.length > 0) runData.push({ run, p50pts, p95pts });
+  }
+
+  if (runData.length === 0) {
+    drawEmptyState(svg, width, height, "streaming data required (avg_output_tokens unavailable)");
+    return;
+  }
+
+  // Compute axis domains across all points
+  let xMin = Infinity, xMax = -Infinity, yMax = -Infinity;
+  for (const { p50pts, p95pts } of runData) {
+    for (const pt of [...p50pts, ...p95pts]) {
+      if (pt.x < xMin) xMin = pt.x;
+      if (pt.x > xMax) xMax = pt.x;
+      if (pt.y > yMax) yMax = pt.y;
+    }
+  }
+  const xPad = (xMax - xMin) * 0.12 || xMax * 0.1;
+  const xDomain = [Math.max(0, xMin - xPad), xMax + xPad];
+  const yDomain = [0, yMax * 1.06];
+  const xScale = scaleLinear(xDomain, [PADDING.left, width - PADDING.right]);
+  const yScale = scaleLinear(yDomain, [height - PADDING.bottom, PADDING.top]);
+
+  drawAxes(svg, {
+    xScale, yScale,
+    xTicks: niceTicks(xDomain),
+    yTicks: niceTicks(yDomain),
+    xLabel: "tok/s per user  (← more saturated · more interactive →)",
+    yLabel: "total tok/s",
+    xFormat: (v) => fmt(v, 1),
+    yFormat: (v) => fmt(v, 0),
+    width, height,
+  });
+
+  // Style legend
+  const legendItems = [{ label: "p50", dashed: false }, { label: "p95", dashed: true }];
+  let lx = width - PADDING.right - 80;
+  const ly = PADDING.top + 4;
+  for (const item of legendItems) {
+    svg.appendChild(svgEl("line", {
+      x1: lx, x2: lx + 18, y1: ly + 5, y2: ly + 5,
+      stroke: "var(--text-dim)", "stroke-width": 2,
+      "stroke-dasharray": item.dashed ? "6 3" : "none",
+    }));
+    const t = svgEl("text", { class: "cb-tick", x: lx + 22, y: ly + 9, "font-size": 10 });
+    t.textContent = item.label;
+    svg.appendChild(t);
+    lx += 40;
+  }
+
+  // Draw per-run lines and dots
+  for (const { run, p50pts, p95pts } of runData) {
+    for (const { pts, dashed } of [{ pts: p50pts, dashed: false }, { pts: p95pts, dashed: true }]) {
+      if (pts.length === 0) continue;
+      const mapped = pts.map((pt) => ({ sx: xScale(pt.x), sy: yScale(pt.y), level: pt.level }));
+      if (mapped.length > 1) {
+        const d = mapped.map((p, i) => `${i === 0 ? "M" : "L"}${p.sx.toFixed(1)},${p.sy.toFixed(1)}`).join(" ");
+        svg.appendChild(svgEl("path", {
+          d, fill: "none", stroke: run.color, "stroke-width": 2,
+          "stroke-linejoin": "round", "stroke-linecap": "round",
+          "stroke-dasharray": dashed ? "6 3" : "none",
+        }));
+      }
+      for (const p of mapped) {
+        svg.appendChild(svgEl("circle", {
+          cx: p.sx, cy: p.sy, r: 3,
+          fill: run.color, stroke: "var(--surface-1)", "stroke-width": 1.5,
+        }));
+      }
+      // Level labels on p50 series only (solid line), above each dot
+      if (!dashed) {
+        for (const p of mapped) {
+          const t = svgEl("text", {
+            class: "cb-tick", x: p.sx, y: p.sy - 7,
+            "text-anchor": "middle", "font-size": 9,
+            fill: run.color,
+          });
+          t.textContent = p.level;
+          svg.appendChild(t);
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
 // DOM: per-level table
 // ---------------------------------------------------------------------
 
@@ -1772,6 +1881,11 @@ function renderAll() {
     runs,
     (lv) => lv.delta ? lv.delta.throughput_tps : null,
     { yLabel: "tokens/sec", yDigits: 0, showKnee: true }
+  );
+  drawInteractivityChart(
+    document.getElementById("chart-interactivity"),
+    { width: W, height: H },
+    runs
   );
   const flags = renderLiteLLMTable(runs);
   drawTaxonomy(

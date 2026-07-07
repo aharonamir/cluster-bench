@@ -113,8 +113,9 @@
     <nav class="tab-nav" role="tablist">
       <button class="tab active" data-tab="ttft"       role="tab" aria-selected="true">TTFT <span class="hint" id="ttft-hint"></span></button>
       <button class="tab"        data-tab="latency"    role="tab">Latency</button>
-      <button class="tab"        data-tab="saturation" role="tab">Saturation</button>
-      <button class="tab"        data-tab="litellm"    role="tab">LiteLLM</button>
+      <button class="tab"        data-tab="saturation"     role="tab">Saturation</button>
+      <button class="tab"        data-tab="interactivity"  role="tab">Interactivity</button>
+      <button class="tab"        data-tab="litellm"        role="tab">LiteLLM</button>
       <button class="tab"        data-tab="taxonomy"   role="tab">Taxonomy</button>
       <button class="tab"        data-tab="table"      role="tab">Per-level</button>
     </nav>
@@ -136,6 +137,12 @@
       <div class="tab-panel" data-tab="saturation">
         <div class="panel-subhead"><span class="eyebrow">where it bends</span> Saturation curve <span class="hint">throughput vs concurrency</span> <span id="knee-note" class="hint"></span></div>
         <svg id="chart-saturation" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
+      </div>
+
+      <!-- Interactivity -->
+      <div class="tab-panel" data-tab="interactivity">
+        <div class="panel-subhead"><span class="eyebrow">throughput vs user experience</span> Interactivity frontier <span class="hint">tok/s per user vs total tok/s · streaming only</span></div>
+        <svg id="chart-interactivity" class="chart-svg" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
       </div>
 
       <!-- LiteLLM -->

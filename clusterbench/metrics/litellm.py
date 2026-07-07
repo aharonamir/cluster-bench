@@ -357,6 +357,7 @@ class LiteLLMSource:
         # correct since no streaming before the start scrape means nothing to
         # subtract. end.ttft_available=False (streaming off) still → None.
         tpot_ms: float | None = None
+        avg_output_tokens: float | None = None
         if end.ttft_available:
             ttft_buckets = _histogram_delta(start, end, SERIES_TTFT)
             if ttft_buckets.get(float("inf"), 0) > 0:
@@ -383,6 +384,7 @@ class LiteLLMSource:
                     gen_s = max(0.0, avg_lat - avg_ttft)
                     if avg_out_tok > 0:
                         tpot_ms = round(gen_s / avg_out_tok * 1000.0, 1)
+                        avg_output_tokens = round(avg_out_tok, 2)
 
         cache_misses = int(max(0.0, _counter_delta(start, end, SERIES_CACHE_MISSES)))
 
@@ -442,6 +444,7 @@ class LiteLLMSource:
             queue_p95=queue_p95,
             tpot_ms=tpot_ms,
             cache_misses=cache_misses if cache_misses > 0 else None,
+            avg_output_tokens=avg_output_tokens,
             rss_mb=rss_mb,
             open_fds=open_fds,
             max_fds=max_fds,

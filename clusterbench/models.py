@@ -194,6 +194,7 @@ class LevelDelta:
     queue_p95: float | None = None
     tpot_ms: float | None = None
     cache_misses: int | None = None
+    avg_output_tokens: float | None = None
     rss_mb: float | None = None
     open_fds: int | None = None
     max_fds: int | None = None
