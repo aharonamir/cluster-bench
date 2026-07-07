@@ -1509,23 +1509,31 @@ function drawInteractivityChart(svg, { width, height }, runs) {
     return;
   }
 
-  // Build points: x = avg_output_tokens / lat_pXX (tok/s/user), y = throughput_tps
+  // Build points per run.
+  // Precise mode (new reports): x = avg_output_tokens / lat_pXX → two lines (p50/p95).
+  // Fallback mode (old reports without avg_output_tokens): x = 1000 / tpot_ms → one "avg" line.
   const runData = [];
   for (const run of runs) {
     const sorted = run.levels.slice().sort((a, b) => a.level - b.level);
     const p50pts = [], p95pts = [];
+    let precise = false;
     for (const lv of sorted) {
       const d = lv.delta;
-      if (!d || d.avg_output_tokens == null) continue;
-      const tok = d.avg_output_tokens;
-      if (d.lat_p50 > 0) p50pts.push({ x: tok / d.lat_p50, y: d.throughput_tps, level: lv.level });
-      if (d.lat_p95 > 0) p95pts.push({ x: tok / d.lat_p95, y: d.throughput_tps, level: lv.level });
+      if (!d) continue;
+      if (d.avg_output_tokens != null && d.lat_p50 > 0 && d.lat_p95 > 0) {
+        precise = true;
+        p50pts.push({ x: d.avg_output_tokens / d.lat_p50, y: d.throughput_tps, level: lv.level });
+        p95pts.push({ x: d.avg_output_tokens / d.lat_p95, y: d.throughput_tps, level: lv.level });
+      } else if (d.tpot_ms != null && d.tpot_ms > 0) {
+        // Old report fallback: TPOT-based average interactivity (generation phase only).
+        p50pts.push({ x: 1000 / d.tpot_ms, y: d.throughput_tps, level: lv.level });
+      }
     }
-    if (p50pts.length > 0) runData.push({ run, p50pts, p95pts });
+    if (p50pts.length > 0) runData.push({ run, p50pts, p95pts, precise });
   }
 
   if (runData.length === 0) {
-    drawEmptyState(svg, width, height, "streaming data required (avg_output_tokens unavailable)");
+    drawEmptyState(svg, width, height, "no streaming data (requires TPOT or avg_output_tokens)");
     return;
   }
 
@@ -1555,9 +1563,14 @@ function drawInteractivityChart(svg, { width, height }, runs) {
     width, height,
   });
 
-  // Style legend
-  const legendItems = [{ label: "p50", dashed: false }, { label: "p95", dashed: true }];
-  let lx = width - PADDING.right - 80;
+  // Legend
+  const anyPrecise = runData.some((rd) => rd.precise);
+  const anyFallback = runData.some((rd) => !rd.precise);
+  const legendItems = anyPrecise
+    ? [{ label: "p50", dashed: false }, { label: "p95", dashed: true }]
+    : [{ label: "avg (TPOT-based)", dashed: false }];
+  if (anyFallback && anyPrecise) legendItems.push({ label: "avg (TPOT)", dashed: false });
+  let lx = width - PADDING.right - legendItems.reduce((s, i) => s + i.label.length * 6 + 36, 0);
   const ly = PADDING.top + 4;
   for (const item of legendItems) {
     svg.appendChild(svgEl("line", {
@@ -1568,12 +1581,16 @@ function drawInteractivityChart(svg, { width, height }, runs) {
     const t = svgEl("text", { class: "cb-tick", x: lx + 22, y: ly + 9, "font-size": 10 });
     t.textContent = item.label;
     svg.appendChild(t);
-    lx += 40;
+    lx += item.label.length * 6 + 36;
   }
 
   // Draw per-run lines and dots
-  for (const { run, p50pts, p95pts } of runData) {
-    for (const { pts, dashed } of [{ pts: p50pts, dashed: false }, { pts: p95pts, dashed: true }]) {
+  for (const { run, p50pts, p95pts, precise } of runData) {
+    const series = precise
+      ? [{ pts: p50pts, dashed: false }, { pts: p95pts, dashed: true }]
+      : [{ pts: p50pts, dashed: false }];  // fallback: single avg line
+
+    for (const { pts, dashed } of series) {
       if (pts.length === 0) continue;
       const mapped = pts.map((pt) => ({ sx: xScale(pt.x), sy: yScale(pt.y), level: pt.level }));
       if (mapped.length > 1) {
@@ -1590,7 +1607,7 @@ function drawInteractivityChart(svg, { width, height }, runs) {
           fill: run.color, stroke: "var(--surface-1)", "stroke-width": 1.5,
         }));
       }
-      // Level labels on p50 series only (solid line), above each dot
+      // Level labels on solid line only, above each dot
       if (!dashed) {
         for (const p of mapped) {
           const t = svgEl("text", {
