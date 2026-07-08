@@ -1,4 +1,5 @@
 # ClusterBench
+<img width="1836" height="822" alt="image" src="https://github.com/user-attachments/assets/12bc62bd-e8c7-4429-baf2-b5c2ce02999a" />
 
 **A concurrency-sweep harness for an LLM inference stack.** ClusterBench drives
 a real coding agent ([mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent))
@@ -261,6 +262,7 @@ sweep continues so the full curve is still mapped.
 ---
 
 ## The dashboard
+<img width="1850" height="890" alt="image" src="https://github.com/user-attachments/assets/12b26156-ea4b-4c7c-9fc7-c7e8e41a8cdd" />
 
 - **Headline graphs** — agents-vs-TTFT and agents-vs-latency, live and from saved
   reports.
